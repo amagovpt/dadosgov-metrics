@@ -236,7 +236,7 @@ extract_tracking_events → send_to_metrics_db → update_udata_metrics → save
 | `extract_tracking_events` | Agrega views e downloads da collection `tracking_events`, calcula contagens do site | MongoDB `udata.tracking_events` + contagens de collections | XCom |
 | `send_to_metrics_db` | Escreve metricas agregadas (views + downloads) no PostgreSQL | XCom | PostgreSQL `datasets` (porta 5434) |
 | `update_udata_metrics` | Le totais do PostgREST (`datasets_total`) e escreve no MongoDB do udata; actualiza metricas de datasets, resources, organizations, reuses, dataservices e site | API Metrics `datasets_total` + MongoDB aggregations | MongoDB `udata.dataset[].metrics`, `udata.organization[].metrics`, `udata.reuse[].metrics`, `udata.metrics`, `udata.site` |
-| `save_to_mongodb` | Regista log do processo ETL | XCom | MongoDB `hydra_metrics.metrics_logs` |
+| `save_to_mongodb` | Regista log do processo ETL | XCom | MongoDB `etl_logs.metrics_logs` |
 
 ### Schedule
 
@@ -257,7 +257,7 @@ UDATA_MONGO_HOST = "192.168.1.96"   # IP da maquina host
 UDATA_MONGO_PORT = 27017
 UDATA_MONGO_DB = "udata"             # Base de dados MongoDB do udata
 METRICS_PG_CONN_ID = "hydra_postgres_csv"  # Airflow Connection ID
-METRICS_MONGO_DB = "hydra_metrics"    # BD para logs do ETL
+METRICS_MONGO_DB = "etl_logs"    # BD para logs do ETL
 METRICS_API_URL = "http://192.168.1.96:8006/api"  # API Metrics (read)
 ```
 
@@ -267,10 +267,10 @@ O provider `apache-airflow-providers-mongo==4.2.2` usa `mongo_collection` como p
 
 ```python
 # CORRECTO
-hook.insert_one(mongo_collection="metrics_logs", doc=log_doc, mongo_db="hydra_metrics")
+hook.insert_one(mongo_collection="metrics_logs", doc=log_doc, mongo_db="etl_logs")
 
 # ERRADO (versoes anteriores)
-hook.insert_one(collection="metrics_logs", doc=log_doc, mongo_db="hydra_metrics")
+hook.insert_one(collection="metrics_logs", doc=log_doc, mongo_db="etl_logs")
 ```
 
 ## 8. Arquitetura do fluxo de metricas
@@ -306,7 +306,7 @@ hook.insert_one(collection="metrics_logs", doc=log_doc, mongo_db="hydra_metrics"
   +---------------------+
 
   [4] LOG
-  MongoDB hydra_metrics
+  MongoDB etl_logs
   +---------------------+
   | metrics_logs        |
   | (registo de cada    |
@@ -349,7 +349,7 @@ METRICS_API=http://localhost:8006/api
 | `udata` | `metrics` | Metricas diarias do site (formato: `{date, level, object_id, values}`) |
 | `udata` | `tracking_events` | Eventos de tracking (view, download) — fonte principal de metricas |
 | `udata` | `metric_event` | Eventos de tracking legados (api_call, download) |
-| `hydra_metrics` | `metrics_logs` | Logs de execucao do DAG |
+| `etl_logs` | `metrics_logs` | Logs de execucao do DAG |
 
 ## 9. Resolucao de problemas
 
