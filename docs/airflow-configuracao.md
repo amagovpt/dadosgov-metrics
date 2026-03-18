@@ -12,7 +12,7 @@ Este documento descreve passo a passo como configurar o Airflow para funcionar c
 4. [Conexoes (Connections)](#4-conexoes-connections)
 5. [Indices e constraints no PostgreSQL](#5-indices-e-constraints-no-postgresql)
 6. [Variaveis (Variables)](#6-variaveis-variables)
-7. [DAG exemplo_etl — Pipeline de metricas](#7-dag-exemplo_etl--pipeline-de-metricas)
+7. [DAG metrics_etl — Pipeline de metricas](#7-dag-metrics_etl--pipeline-de-metricas)
 8. [Arquitetura do fluxo de metricas](#8-arquitetura-do-fluxo-de-metricas)
 9. [Resolucao de problemas](#9-resolucao-de-problemas)
 
@@ -164,9 +164,9 @@ docker exec <container> airflow connections add "udata_http" \
 | Conn Id | Type | Host | Port | Schema | Usado por |
 |---------|------|------|------|--------|-----------|
 | `hydra_postgres` | postgres | `192.168.1.96` | `5432` | `postgres` | Acesso a BD principal |
-| `hydra_postgres_csv` | postgres | `192.168.1.96` | `5434` | `postgres` | DAG `exemplo_etl` (escrita metricas) |
+| `hydra_postgres_csv` | postgres | `192.168.1.96` | `5434` | `postgres` | DAG `metrics_etl` (escrita metricas) |
 | `api_tabular_conn` | http | `192.168.1.96` | `8006` | — | Referencia a API Metrics |
-| `mongo_default` | mongo | `192.168.1.96` | `27017` | — | DAG `exemplo_etl` (logs) |
+| `mongo_default` | mongo | `192.168.1.96` | `27017` | — | DAG `metrics_etl` (logs) |
 | `udata_http` | http | `192.168.1.96` | `7000` | — | Referencia (nao usado no DAG actual) |
 
 ### Verificar todas as conexoes
@@ -177,7 +177,7 @@ docker exec <container> airflow connections list -o table
 
 ## 5. Indices e constraints no PostgreSQL
 
-O DAG `exemplo_etl` usa UPSERT nas tabelas do PostgreSQL CSV. E necessario criar os seguintes indices:
+O DAG `metrics_etl` usa UPSERT nas tabelas do PostgreSQL CSV. E necessario criar os seguintes indices:
 
 ```bash
 # Indice unico para upsert na tabela datasets
@@ -215,23 +215,27 @@ docker exec <container> airflow variables set METRICS_API_URL "http://192.168.1.
 docker exec <container> airflow variables set MONGODB_CONN_ID "mongo_default"
 ```
 
-**Nota:** O DAG `exemplo_etl` actual usa constantes no codigo em vez de Variables, para simplicidade.
+**Nota:** O DAG `metrics_etl` actual usa constantes no codigo em vez de Variables, para simplicidade.
 
-## 7. DAG exemplo_etl — Pipeline de metricas
+## 7. DAG metrics_etl — Pipeline de metricas
+
+### Ficheiro
+
+`dags/metrics_etl.py`
 
 ### Fluxo
 
 ```
-extract_from_udata → send_to_metrics_db → update_udata_metrics → save_to_mongodb
+extract_tracking_events → send_to_metrics_db → update_udata_metrics → save_to_mongodb
 ```
 
 ### Tasks
 
 | Task | O que faz | Origem | Destino |
 |------|-----------|--------|---------|
-| `extract_from_udata` | Extrai metricas de datasets e contagens do site | MongoDB `udata.dataset` | XCom |
-| `send_to_metrics_db` | Escreve metricas no PostgreSQL para a API Metrics | XCom | PostgreSQL `datasets` (porta 5434) |
-| `update_udata_metrics` | Le metricas agregadas do PostgREST e escreve de volta no MongoDB do udata | API Metrics `datasets_total` | MongoDB `udata.dataset[].metrics` + `udata.metrics` |
+| `extract_tracking_events` | Agrega views e downloads da collection `tracking_events`, calcula contagens do site | MongoDB `udata.tracking_events` + contagens de collections | XCom |
+| `send_to_metrics_db` | Escreve metricas agregadas (views + downloads) no PostgreSQL | XCom | PostgreSQL `datasets` (porta 5434) |
+| `update_udata_metrics` | Le totais do PostgREST (`datasets_total`) e escreve no MongoDB do udata; actualiza metricas de datasets, resources, organizations, reuses, dataservices e site | API Metrics `datasets_total` + MongoDB aggregations | MongoDB `udata.dataset[].metrics`, `udata.organization[].metrics`, `udata.reuse[].metrics`, `udata.metrics`, `udata.site` |
 | `save_to_mongodb` | Regista log do processo ETL | XCom | MongoDB `hydra_metrics.metrics_logs` |
 
 ### Schedule
@@ -272,32 +276,42 @@ hook.insert_one(collection="metrics_logs", doc=log_doc, mongo_db="hydra_metrics"
 ## 8. Arquitetura do fluxo de metricas
 
 ```
-                    DAG exemplo_etl (Airflow)
-                    ========================
+                      DAG metrics_etl (Airflow)
+                      ===========================
 
-  [1] MongoDB udata          [2] PostgreSQL CSV (5434)
-      (porta 27017)               tabela: datasets
-      +-----------------+         +------------------+
-      | udata.dataset   |--extract-->| dataset_id     |
-      |   .metrics      |         | metric_month     |
-      |   .views        |         | monthly_visit    |
-      |   .downloads    |         | monthly_download |
-      +-----------------+         +------------------+
-             ^                           |
-             |                    [view: datasets_total]
-             |                           |
-             |                    +------------------+
-             +---update_udata----| API Metrics:8006 |
-                  _metrics       | /api/datasets_   |
-                                 |   total/data/    |
-                                 +------------------+
+  [1] EXTRACT                    [2] SEND TO PG
+  MongoDB udata                  PostgreSQL CSV (5434)
+  (porta 27017)                  tabela: datasets
+  +---------------------+       +----------------------+
+  | tracking_events     |       | dataset_id           |
+  |  .event_type: view  |--agg-->| metric_month        |
+  |  .event_type: download|     | monthly_visit        |
+  |  .object_id         |       | monthly_download_res |
+  +---------------------+       +----------------------+
+                                        |
+  [3] UPDATE UDATA              [view: datasets_total]
+  MongoDB udata                         |
+  (porta 27017)                  +-------------------+
+  +---------------------+       | API Metrics:8006  |
+  | dataset[].metrics   |<------| /api/datasets_    |
+  |   .views            |       |   total/data/     |
+  |   .resources_downloads|     +-------------------+
+  |   .followers         |
+  |   .discussions       |
+  | organization[].metrics|
+  |   .views, .datasets  |
+  | reuse[].metrics      |
+  | site[].metrics       |
+  | metrics (daily)      |
+  +---------------------+
 
-  [3] MongoDB udata           [4] MongoDB hydra_metrics
-      (porta 27017)               (porta 27017)
-      +-----------------+         +------------------+
-      | udata.metrics   |         | metrics_logs     |
-      | (site diario)   |         | (logs ETL)       |
-      +-----------------+         +------------------+
+  [4] LOG
+  MongoDB hydra_metrics
+  +---------------------+
+  | metrics_logs        |
+  | (registo de cada    |
+  |  execucao do DAG)   |
+  +---------------------+
 ```
 
 ### Como o udata le as metricas
@@ -333,7 +347,8 @@ METRICS_API=http://localhost:8006/api
 |----------|-----------|-----------|
 | `udata` | `dataset` | Datasets com metricas embebidas em `metrics.*` |
 | `udata` | `metrics` | Metricas diarias do site (formato: `{date, level, object_id, values}`) |
-| `udata` | `metric_event` | Eventos de tracking (api_call, download) |
+| `udata` | `tracking_events` | Eventos de tracking (view, download) — fonte principal de metricas |
+| `udata` | `metric_event` | Eventos de tracking legados (api_call, download) |
 | `hydra_metrics` | `metrics_logs` | Logs de execucao do DAG |
 
 ## 9. Resolucao de problemas
@@ -416,10 +431,10 @@ print(r.json())
 
 ```bash
 # Logs do ultimo run
-docker compose logs --tail=50 webserver | grep exemplo_etl
+docker compose logs --tail=50 webserver | grep metrics_etl
 
 # Log de uma task especifica
-docker exec <container> airflow tasks test exemplo_etl extract_from_udata 2026-03-18
+docker exec <container> airflow tasks test metrics_etl extract_tracking_events 2026-03-18
 ```
 
 ### Reconstruir a imagem apos alteracoes
