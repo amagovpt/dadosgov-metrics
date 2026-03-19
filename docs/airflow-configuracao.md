@@ -84,17 +84,17 @@ Isto mapeia `host.docker.internal` para o IP do host. **Mas** se o servico no ho
 
 | Servico | IP no DAG | Acessivel? | Razao |
 |---------|-----------|------------|-------|
-| MongoDB (`27017`) | `192.168.1.96` | Sim | Bound a `0.0.0.0` |
-| PostgreSQL CSV (`5434`) | via Airflow Connection | Sim | Bound a `0.0.0.0` |
-| API Metrics (`8006`) | `192.168.1.96` | Sim | Bound a `0.0.0.0` |
-| PostgREST (`8080`) | `192.168.1.96` | Sim | Bound a `0.0.0.0` |
+| MongoDB (`27017`) | `10.55.37.143` | Sim | Bound a `0.0.0.0` |
+| PostgreSQL CSV (`5434`) | `10.55.37.145` (via Airflow Connection) | Sim | Bound a `0.0.0.0` |
+| API Metrics (`8006`) | `10.55.37.145` | Sim | Bound a `0.0.0.0` |
+| PostgREST (`8080`) | `10.55.37.145` | Sim | Bound a `0.0.0.0` |
 | udata API (`7000`) | N/A | **Nao** | Bound a `127.0.0.1` |
 
 Para verificar o acesso a partir do container:
 
 ```bash
 docker exec <container> getent hosts host.docker.internal
-docker exec <container> python3 -c "from pymongo import MongoClient; print(MongoClient('192.168.1.96', 27017).list_database_names())"
+docker exec <container> python3 -c "from pymongo import MongoClient; print(MongoClient('10.55.37.143', 27017).list_database_names())"
 ```
 
 ## 4. Conexoes (Connections)
@@ -108,7 +108,7 @@ Aceder a **Admin > Connections** no UI do Airflow (`http://localhost:18080/conne
 ```bash
 docker exec <container> airflow connections add "hydra_postgres" \
   --conn-type postgres \
-  --conn-host "192.168.1.96" \
+  --conn-host "10.55.37.145" \
   --conn-port 5432 \
   --conn-login postgres \
   --conn-password postgres \
@@ -121,7 +121,7 @@ docker exec <container> airflow connections add "hydra_postgres" \
 ```bash
 docker exec <container> airflow connections add "hydra_postgres_csv" \
   --conn-type postgres \
-  --conn-host "192.168.1.96" \
+  --conn-host "10.55.37.145" \
   --conn-port 5434 \
   --conn-login postgres \
   --conn-password postgres \
@@ -134,7 +134,7 @@ docker exec <container> airflow connections add "hydra_postgres_csv" \
 ```bash
 docker exec <container> airflow connections add "api_tabular_conn" \
   --conn-type http \
-  --conn-host "192.168.1.96" \
+  --conn-host "10.55.37.145" \
   --conn-port 8006 \
   --conn-description "API Tabular (PostgREST)"
 ```
@@ -144,7 +144,7 @@ docker exec <container> airflow connections add "api_tabular_conn" \
 ```bash
 docker exec <container> airflow connections add "mongo_default" \
   --conn-type mongo \
-  --conn-host "192.168.1.96" \
+  --conn-host "10.55.37.145" \
   --conn-port 27017 \
   --conn-description "MongoDB udata (sem autenticacao)"
 ```
@@ -154,7 +154,7 @@ docker exec <container> airflow connections add "mongo_default" \
 ```bash
 docker exec <container> airflow connections add "udata_http" \
   --conn-type http \
-  --conn-host "192.168.1.96" \
+  --conn-host "172.31.204.12" \
   --conn-port 7000 \
   --conn-description "udata API"
 ```
@@ -163,11 +163,11 @@ docker exec <container> airflow connections add "udata_http" \
 
 | Conn Id | Type | Host | Port | Schema | Usado por |
 |---------|------|------|------|--------|-----------|
-| `hydra_postgres` | postgres | `192.168.1.96` | `5432` | `postgres` | Acesso a BD principal |
-| `hydra_postgres_csv` | postgres | `192.168.1.96` | `5434` | `postgres` | DAG `metrics_etl` (escrita metricas) |
-| `api_tabular_conn` | http | `192.168.1.96` | `8006` | — | Referencia a API Metrics |
-| `mongo_default` | mongo | `192.168.1.96` | `27017` | — | DAG `metrics_etl` (logs) |
-| `udata_http` | http | `192.168.1.96` | `7000` | — | Referencia (nao usado no DAG actual) |
+| `hydra_postgres` | postgres | `10.55.37.145` | `5432` | `postgres` | Acesso a BD principal |
+| `hydra_postgres_csv` | postgres | `10.55.37.145` | `5434` | `postgres` | DAG `metrics_etl` (escrita metricas no schema `metric`) |
+| `api_tabular_conn` | http | `10.55.37.145` | `8006` | — | Referencia a API Metrics |
+| `mongo_default` | mongo | `10.55.37.145` | `27017` | — | DAG `metrics_etl` (logs) |
+| `udata_http` | http | `172.31.204.12` | `7000` | — | Referencia (nao usado no DAG actual) |
 
 ### Verificar todas as conexoes
 
@@ -177,41 +177,51 @@ docker exec <container> airflow connections list -o table
 
 ## 5. Indices e constraints no PostgreSQL
 
-O DAG `metrics_etl` usa UPSERT nas tabelas do PostgreSQL CSV. E necessario criar os seguintes indices:
+O DAG `metrics_etl` escreve nas tabelas base do schema `metric` e usa UPSERT. Os indices unicos sao criados automaticamente pelo DAG, mas podem ser criados manualmente:
 
 ```bash
-# Indice unico para upsert na tabela datasets
+# Indice unico para upsert na tabela visits_datasets
 docker exec hydra-pt-database-csv-1 psql -U postgres -c \
-  "CREATE UNIQUE INDEX IF NOT EXISTS idx_datasets_unique ON datasets (dataset_id, metric_month);"
+  "CREATE UNIQUE INDEX IF NOT EXISTS visits_datasets_upsert_idx ON metric.visits_datasets (dataset_id, date_metric);"
 
-# Indice unico para upsert na tabela site
+# Indice unico para upsert na tabela visits_resources
 docker exec hydra-pt-database-csv-1 psql -U postgres -c \
-  "CREATE UNIQUE INDEX IF NOT EXISTS idx_site_metric_month_unique ON site (metric_month);"
+  "CREATE UNIQUE INDEX IF NOT EXISTS visits_resources_upsert_idx ON metric.visits_resources (resource_id, date_metric);"
 ```
+
+### Tabelas base no schema `metric`
+
+O DAG escreve nestas tabelas base:
+
+| Tabela | Descricao |
+|--------|-----------|
+| `metric.visits_datasets` | Visitas diarias por dataset (colunas: `date_metric`, `dataset_id`, `organization_id`, `nb_visit`) |
+| `metric.visits_resources` | Downloads diarios por recurso (colunas: `date_metric`, `resource_id`, `dataset_id`, `organization_id`, `nb_visit`) |
+
+### Materialized views
+
+As tabelas base sao agregadas por materialized views (refrescadas automaticamente pelo DAG):
+
+| View | Fonte | Descricao |
+|------|-------|-----------|
+| `metric.metrics_datasets` | `visits_datasets` + `matomo_datasets` + `visits_resources` | Juncao de metricas diarias por dataset |
+| `metric.datasets` | `metrics_datasets` | Agregacao mensal por dataset |
+| `metric.datasets_total` | `metrics_datasets` | Total acumulado por dataset (usada pelo PostgREST/API) |
+| `metric.resources` | `visits_resources` | Agregacao mensal por recurso |
+| `metric.resources_total` | `visits_resources` | Total acumulado por recurso |
+| `metric.site` | `datasets` + `reuses` + `dataservices` | Metricas mensais do site |
 
 ### Verificar que as tabelas existem
 
 ```bash
-docker exec hydra-pt-database-csv-1 psql -U postgres -c "\dt datasets; \dt datasets_total; \dt site;"
-```
-
-A tabela `datasets_total` e uma **view** que agrega os dados da tabela `datasets`:
-
-```sql
--- View automatica (ja existe)
-SELECT dataset_id,
-       sum(monthly_visit) AS visit,
-       sum(monthly_download_resource) AS download_resource,
-       max(id) AS __id
-FROM datasets
-GROUP BY dataset_id;
+docker exec hydra-pt-database-csv-1 psql -U postgres -c "\dt metric.*; \dm metric.*;"
 ```
 
 ## 6. Variaveis (Variables)
 
 ```bash
-docker exec <container> airflow variables set UDATA_INSTANCE_URL "http://192.168.1.96:7000"
-docker exec <container> airflow variables set METRICS_API_URL "http://192.168.1.96:8006/api"
+docker exec <container> airflow variables set UDATA_INSTANCE_URL "http://172.31.204.12:7000"
+docker exec <container> airflow variables set METRICS_API_URL "http://10.55.37.145:8006/api"
 docker exec <container> airflow variables set MONGODB_CONN_ID "mongo_default"
 ```
 
@@ -226,15 +236,16 @@ docker exec <container> airflow variables set MONGODB_CONN_ID "mongo_default"
 ### Fluxo
 
 ```
-extract_tracking_events → send_to_metrics_db → update_udata_metrics → save_to_mongodb
+extract_tracking_events → send_to_metrics_db → refresh_materialized_views → update_udata_metrics → save_to_mongodb
 ```
 
 ### Tasks
 
 | Task | O que faz | Origem | Destino |
 |------|-----------|--------|---------|
-| `extract_tracking_events` | Agrega views e downloads da collection `tracking_events`, calcula contagens do site | MongoDB `udata.tracking_events` + contagens de collections | XCom |
-| `send_to_metrics_db` | Escreve metricas agregadas (views + downloads) no PostgreSQL | XCom | PostgreSQL `datasets` (porta 5434) |
+| `extract_tracking_events` | Agrega views e downloads da collection `tracking_events` por dia, constroi lookups de org/resource, calcula contagens do site | MongoDB `udata.tracking_events` + contagens de collections | XCom |
+| `send_to_metrics_db` | Escreve visitas diarias por dataset e downloads por recurso nas tabelas base do schema `metric` | XCom | PostgreSQL `metric.visits_datasets` + `metric.visits_resources` (porta 5434) |
+| `refresh_materialized_views` | Refresca todas as materialized views para que o PostgREST sirva dados actualizados | PostgreSQL | PostgreSQL (15 materialized views) |
 | `update_udata_metrics` | Le totais do PostgREST (`datasets_total`) e escreve no MongoDB do udata; actualiza metricas de datasets, resources, organizations, reuses, dataservices e site | API Metrics `datasets_total` + MongoDB aggregations | MongoDB `udata.dataset[].metrics`, `udata.organization[].metrics`, `udata.reuse[].metrics`, `udata.metrics`, `udata.site` |
 | `save_to_mongodb` | Regista log do processo ETL | XCom | MongoDB `etl_logs.metrics_logs` |
 
@@ -253,12 +264,12 @@ schedule="@daily"        # diario
 ### Constantes no DAG
 
 ```python
-UDATA_MONGO_HOST = "192.168.1.96"   # IP da maquina host
+UDATA_MONGO_HOST = "10.55.37.143"    # IP do servidor MongoDB
 UDATA_MONGO_PORT = 27017
 UDATA_MONGO_DB = "udata"             # Base de dados MongoDB do udata
 METRICS_PG_CONN_ID = "hydra_postgres_csv"  # Airflow Connection ID
 METRICS_MONGO_DB = "etl_logs"    # BD para logs do ETL
-METRICS_API_URL = "http://192.168.1.96:8006/api"  # API Metrics (read)
+METRICS_API_URL = "http://10.55.37.145:8006/api"  # API Metrics (read)
 ```
 
 ### MongoHook — API correcta (v4.2.2)
@@ -281,15 +292,24 @@ hook.insert_one(collection="metrics_logs", doc=log_doc, mongo_db="etl_logs")
 
   [1] EXTRACT                    [2] SEND TO PG
   MongoDB udata                  PostgreSQL CSV (5434)
-  (porta 27017)                  tabela: datasets
-  +---------------------+       +----------------------+
-  | tracking_events     |       | dataset_id           |
-  |  .event_type: view  |--agg-->| metric_month        |
-  |  .event_type: download|     | monthly_visit        |
-  |  .object_id         |       | monthly_download_res |
-  +---------------------+       +----------------------+
+  (porta 27017)                  schema: metric
+  +---------------------+       +---------------------------+
+  | tracking_events     |       | visits_datasets           |
+  |  .event_type: view  |--agg-->|  date_metric, dataset_id |
+  |  .event_type: download|     |  nb_visit                 |
+  |  .object_id         |       +---------------------------+
+  |  .resource_id       |       | visits_resources          |
+  |  .created_at        |--agg-->|  date_metric, resource_id|
+  +---------------------+       |  dataset_id, nb_visit     |
+                                +---------------------------+
                                         |
-  [3] UPDATE UDATA              [view: datasets_total]
+  [3] REFRESH VIEWS              [materialized views]
+  PostgreSQL CSV (5434)          metrics_datasets
+                                 → datasets / datasets_total
+                                 → resources / resources_total
+                                 → site
+                                        |
+  [4] UPDATE UDATA              [PostgREST API]
   MongoDB udata                         |
   (porta 27017)                  +-------------------+
   +---------------------+       | API Metrics:8006  |
@@ -305,7 +325,7 @@ hook.insert_one(collection="metrics_logs", doc=log_doc, mongo_db="etl_logs")
   | metrics (daily)      |
   +---------------------+
 
-  [4] LOG
+  [5] LOG
   MongoDB etl_logs
   +---------------------+
   | metrics_logs        |
@@ -325,21 +345,30 @@ O udata tem um job celery `update-metrics` (plugin `udata_metrics`) que:
 Configuracao relevante no udata (`udata.cfg` / `.env`):
 
 ```
-METRICS_API=http://localhost:8006/api
+METRICS_API=http://10.55.37.145:8006/api
 ```
 
-### Tabelas no PostgreSQL CSV (porta 5434)
+### Tabelas no PostgreSQL CSV (porta 5434, schema `metric`)
 
-| Tabela/View | Tipo | Descricao |
-|------------|------|-----------|
-| `datasets` | tabela | Metricas mensais por dataset (escrita pelo DAG) |
-| `datasets_total` | view | Agregacao de `datasets` — soma total por dataset_id |
-| `site` | tabela | Metricas mensais do site (visitas, contagens) |
-| `organizations` | tabela | Metricas por organizacao |
-| `reuses` | tabela | Metricas por reutilizacao |
-| `resources` | tabela | Metricas por recurso |
-| `views` | tabela | Views de paginas |
-| `downloads` | tabela | Downloads de recursos |
+**Tabelas base (escritas pelo DAG):**
+
+| Tabela | Descricao |
+|--------|-----------|
+| `metric.visits_datasets` | Visitas diarias por dataset (`date_metric`, `dataset_id`, `nb_visit`) |
+| `metric.visits_resources` | Downloads diarios por recurso (`date_metric`, `resource_id`, `dataset_id`, `nb_visit`) |
+| `metric.matomo_datasets` | Outlinks do Matomo por dataset (nao escrita pelo DAG) |
+
+**Materialized views (refrescadas pelo DAG):**
+
+| View | Descricao |
+|------|-----------|
+| `metric.metrics_datasets` | Juncao de visits + matomo + resource downloads por dataset/dia |
+| `metric.datasets` | Agregacao mensal por dataset |
+| `metric.datasets_total` | Total acumulado por dataset (exposta pelo PostgREST) |
+| `metric.resources` | Agregacao mensal por recurso |
+| `metric.resources_total` | Total acumulado por recurso |
+| `metric.site` | Metricas mensais do site |
+| `metric.organizations` / `metric.reuses` / `metric.dataservices` | Agregacoes por tipo de objecto |
 
 ### Collections no MongoDB
 
@@ -405,24 +434,24 @@ Causas comuns:
 # MongoDB
 docker exec <container> python3 -c "
 from pymongo import MongoClient
-c = MongoClient('192.168.1.96', 27017)
+c = MongoClient('10.55.37.143', 27017)
 print(c.list_database_names())
 "
 
-# PostgreSQL
+# PostgreSQL (schema metric)
 docker exec <container> python3 -c "
 from airflow.providers.postgres.hooks.postgres import PostgresHook
 hook = PostgresHook(postgres_conn_id='hydra_postgres_csv')
 conn = hook.get_conn()
 cur = conn.cursor()
-cur.execute('SELECT count(*) FROM datasets')
-print('datasets:', cur.fetchone()[0])
+cur.execute('SELECT count(*) FROM metric.visits_datasets')
+print('visits_datasets:', cur.fetchone()[0])
 "
 
 # API Metrics
 docker exec <container> python3 -c "
 import requests
-r = requests.get('http://192.168.1.96:8006/health/')
+r = requests.get('http://10.55.37.145:8006/api/datasets_total/data/?page_size=1')
 print(r.json())
 "
 ```
