@@ -13,6 +13,7 @@ Uso (executar na raiz do repositorio):
   python3 setup.py
 """
 
+import json
 import os
 import re
 import shutil
@@ -88,6 +89,20 @@ def wait_for_airflow(container, timeout=120):
 # ---------------------------------------------------------------------------
 # Steps
 # ---------------------------------------------------------------------------
+def step_prepare_dirs(repo_dir):
+    banner("0. Preparacao dos diretorios")
+    run("bash 1_prepareDirs.sh", cwd=repo_dir)
+
+
+def step_prepare_env(repo_dir):
+    env_path = os.path.join(repo_dir, ".env")
+    if os.path.isfile(env_path):
+        print("  .env ja existe. A saltar criacao.")
+        return
+    banner("0b. Criacao do ficheiro .env")
+    run("bash 2_prepare_env.sh", cwd=repo_dir)
+
+
 def step_docker_build(repo_dir):
     banner("1. Build e arranque dos containers")
 
@@ -101,20 +116,38 @@ def step_docker_build(repo_dir):
     run(f"docker compose ps", cwd=repo_dir)
 
 
-def step_import_connections():
+def step_import_connections(repo_dir):
     banner("2. Importacao das Airflow Connections")
-    run("docker exec airflow-demo-test airflow connections import data-engineering-stack/docs/connections.json")
+
+    connections_path = os.path.join(repo_dir, "docs", "connections.json")
+
+    mongo_ip = ask_ip("MongoDB", "127.0.0.1")
+
+    with open(connections_path, "r", encoding="utf-8") as f:
+        connections = json.load(f)
+
+    connections["mongo_default"]["host"] = mongo_ip
+
+    with open(connections_path, "w", encoding="utf-8") as f:
+        json.dump(connections, f, indent=2, ensure_ascii=False)
+
+    print(f"  connections.json atualizado: mongo_default.host = {mongo_ip}")
+
+    run(f"docker cp {connections_path} airflow-demo-test:/tmp/connections.json")
+    run("docker exec airflow-demo-test airflow connections import /tmp/connections.json")
 
 
-def step_import_variables():
+def step_import_variables(repo_dir):
     banner("3. Importacao das Airflow Variables")
-    run("docker exec airflow-demo-test airflow variables import data-engineering-stack/docs/variables.json")
+    variables_path = os.path.join(repo_dir, "docs", "variables.json")
+    run(f"docker cp {variables_path} airflow-demo-test:/tmp/variables.json")
+    run("docker exec airflow-demo-test airflow variables import /tmp/variables.json")
 
 
 def step_create_tables(repo_dir):
     banner("4. Criacao das tabelas no Hydra (PostgreSQL)")
 
-    hydra_ip = ask_ip("Hydra (PostgreSQL)", "10.55.37.145")
+    hydra_ip = ask_ip("Hydra (PostgreSQL)", "127.0.0.1")
     hydra_host = f"{hydra_ip}:5432"
 
     sql_script = os.path.join(repo_dir, "scripts", "create_tables.sql")
@@ -164,6 +197,10 @@ def main():
     os.chdir(repo_dir)
     print(f"  Repositorio: {repo_dir}")
 
+    # Step 0: Preparar diretorios e .env (primeiros passos obrigatorios)
+    step_prepare_dirs(repo_dir)
+    step_prepare_env(repo_dir)
+
     # Check prerequisites
     for tool in ["docker"]:
         if not shutil.which(tool):
@@ -184,10 +221,10 @@ def main():
     wait_for_airflow(container, timeout=120)
 
     # Step 2: Import connections
-    step_import_connections()
+    step_import_connections(repo_dir)
 
     # Step 3: Import variables
-    step_import_variables()
+    step_import_variables(repo_dir)
 
     # Step 4: Create tables
     step_create_tables(repo_dir)
@@ -196,7 +233,7 @@ def main():
     step_trigger_dag(container)
 
     banner("Setup concluido!")
-    print(f"  Airflow UI: http://localhost:28080")
+    print(f"  Airflow UI: http://localhost:8080")
     print(f"  Container:  {container}")
     print(f"  DAG:        metrics_etl")
     print(f"  Docs:       docs/airflow-configuracao.md\n")

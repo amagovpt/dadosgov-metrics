@@ -4,7 +4,7 @@
     "description": "API Tabular (PostgREST)",
     "login": "",
     "password": null,
-    "host": "10.55.37.43",
+    "host": "127.0.0.1",
     "port": 8006,
     "schema": "",
     "extra": ""
@@ -14,7 +14,7 @@
     "description": "Hydra main PostgreSQL database",
     "login": "postgres",
     "password": "postgres",
-    "host": "10.55.37.43",
+    "host": "127.0.0.1",
     "port": 5432,
     "schema": "postgres",
     "extra": ""
@@ -24,17 +24,17 @@
     "description": "Hydra CSV PostgreSQL database (used by api-tabular/PostgREST)",
     "login": "postgres",
     "password": "postgres",
-    "host": "10.55.37.43",
+    "host": "127.0.0.1",
     "port": 5434,
     "schema": "postgres",
     "extra": null
   },
   "mongo_default": {
     "conn_type": "mongo",
-    "description": "MongoDB udata (sem autentica\u00e7\u00e3o)",
+    "description": "MongoDB udata (sem autenticação)",
     "login": "",
     "password": null,
-    "host": "10.55.37.40",
+    "host": "127.0.0.1",
     "port": 27017,
     "schema": "",
     "extra": "{\"srv\": false, \"ssl\": false, \"allow_insecure\": false}"
@@ -44,7 +44,7 @@
     "description": "udata API",
     "login": "",
     "password": null,
-    "host": "10.55.37.43",
+    "host": "127.0.0.1",
     "port": 7000,
     "schema": "",
     "extra": ""
