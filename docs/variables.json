@@ -1,0 +1,6 @@
+{
+    "AIRFLOW_DAG_HOME": "/opt/airflow",
+    "API_TABULAR_URL": "http://10.55.37.145:8006",
+    "MONGODB_CONN_ID": "mongo_default",
+    "UDATA_INSTANCE_URL": "http://host.docker.internal:7000"
+}

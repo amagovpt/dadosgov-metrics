@@ -1,0 +1,52 @@
+{
+  "api_tabular_conn": {
+    "conn_type": "http",
+    "description": "API Tabular (PostgREST)",
+    "login": "",
+    "password": null,
+    "host": "10.55.37.145",
+    "port": 8006,
+    "schema": "",
+    "extra": ""
+  },
+  "hydra_postgres": {
+    "conn_type": "postgres",
+    "description": "Hydra main PostgreSQL database",
+    "login": "postgres",
+    "password": "postgres",
+    "host": "10.55.37.145",
+    "port": 5432,
+    "schema": "postgres",
+    "extra": ""
+  },
+  "hydra_postgres_csv": {
+    "conn_type": "postgres",
+    "description": "Hydra CSV PostgreSQL database (used by api-tabular/PostgREST)",
+    "login": "postgres",
+    "password": "postgres",
+    "host": "10.55.37.145",
+    "port": 5434,
+    "schema": "postgres",
+    "extra": null
+  },
+  "mongo_default": {
+    "conn_type": "mongo",
+    "description": "MongoDB udata (sem autentica\u00e7\u00e3o)",
+    "login": "",
+    "password": null,
+    "host": "10.55.37.143",
+    "port": 27017,
+    "schema": "",
+    "extra": "{\"srv\": false, \"ssl\": false, \"allow_insecure\": false}"
+  },
+  "udata_http": {
+    "conn_type": "http",
+    "description": "udata API",
+    "login": "",
+    "password": null,
+    "host": "10.55.37.145",
+    "port": 7000,
+    "schema": "",
+    "extra": ""
+  }
+}
