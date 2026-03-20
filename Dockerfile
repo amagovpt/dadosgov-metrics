@@ -31,8 +31,6 @@ RUN apt-get install libmagic1 -y
 RUN chown -R "airflow:root" /opt/airflow/
 
 RUN mkdir -p /opt/airflow/.ssh
-ADD ssh /opt/airflow/.ssh/
-RUN chown -R airflow:root /opt/airflow/.ssh/
 
 USER airflow
 
