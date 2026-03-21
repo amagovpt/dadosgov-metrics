@@ -9,8 +9,17 @@ visits_reuses, visits_organizations, visits_dataservices, matomo_datasets, etc.)
 Based on: https://github.com/datagouv/datagouvfr_data_pipelines/tree/main/dgv/metrics
 
 Usage:
-    python3 import_matomo_metrics.py [--date 2026-03-20] [--period day]
-    docker exec airflow-demo-test python3 /tmp/import_matomo_metrics.py
+    # Import yesterday's data (default)
+    python3 scripts/import_matomo_metrics.py
+
+    # Import a specific date
+    python3 scripts/import_matomo_metrics.py --date 2026-03-15
+
+    # Import the last 30 days
+    python3 scripts/import_matomo_metrics.py --date 2026-03-20 --days 30
+
+    # Import ALL historical data from Matomo (since 2018-07-19)
+    python3 scripts/import_matomo_metrics.py --all
 """
 
 import argparse
