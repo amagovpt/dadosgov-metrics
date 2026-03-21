@@ -8,7 +8,11 @@ logger = logging.getLogger(__name__)
 UDATA_MONGO_DB = "udata"
 METRICS_PG_CONN_ID = "hydra_postgres_csv"
 METRICS_MONGO_DB = "etl_logs"
-METRICS_API_URL = "http://host.docker.internal:8006/api"
+try:
+    from airflow.models import Variable
+    METRICS_API_URL = Variable.get("METRICS_API_URL", default_var="http://host.docker.internal:8006/api")
+except Exception:
+    METRICS_API_URL = "http://host.docker.internal:8006/api"
 
 
 def _id_or_slug_query(identifier):

@@ -81,6 +81,48 @@ def ask_ip(label, default):
         print(f"    IP invalido: {ip}. Tente novamente.")
 
 
+def ask_host(label, default):
+    """Ask for a host (IP address or hostname) with basic validation."""
+    while True:
+        host = ask(f"Host do {label}", default)
+        if re.match(r"^[\w.\-]+$", host):
+            return host
+        print(f"    Host invalido: {host}. Tente novamente.")
+
+
+def ask_topology():
+    """Ask the user about deployment topology and return host configuration."""
+    banner("Topologia de Instalacao")
+    print("  Escolha o tipo de instalacao:\n")
+    print("  1) All-in-one   - Todos os componentes na mesma maquina (default)")
+    print("  2) Distribuida  - udata (MongoDB + API) numa maquina remota\n")
+
+    choice = ask("Opcao", "1")
+
+    config = {
+        "udata_host": os.environ.get("UDATA_HOST", "host.docker.internal"),
+        "udata_port": int(os.environ.get("UDATA_PORT", "7000")),
+        "mongo_host": os.environ.get("MONGO_HOST", "host.docker.internal"),
+        "mongo_port": int(os.environ.get("MONGO_PORT", "27017")),
+    }
+
+    if choice == "2":
+        print("\n  Modo distribuido: udata esta num servidor remoto.")
+        udata_host = ask_host("servidor udata (MongoDB + udata API)", config["udata_host"])
+        config["udata_host"] = udata_host
+        config["mongo_host"] = udata_host
+    else:
+        mongo_ip = ask_ip("MongoDB (udata)", "10.55.37.40")
+        config["mongo_host"] = mongo_ip
+
+    banner("Configuracao de Rede")
+    print(f"  MongoDB:        {config['mongo_host']}:{config['mongo_port']}")
+    print(f"  udata API:      {config['udata_host']}:{config['udata_port']}")
+    print(f"  Hydra/API-Tab:  host.docker.internal (local)")
+
+    return config
+
+
 def docker_exec(container, cmd):
     """Run a command inside the Airflow container."""
     full = f'docker exec {container} {cmd}'
@@ -133,20 +175,21 @@ def step_docker_build(repo_dir):
     run(f"docker compose ps", cwd=repo_dir)
 
 
-def step_import_connections(repo_dir):
+def step_import_connections(repo_dir, topology):
     banner("2. Importacao das Airflow Connections")
 
     connections_path = os.path.join(repo_dir, "docs", "connections.json")
 
-    mongo_ip = ask_ip("MongoDB (udata)", "10.55.37.40")
-
     with open(connections_path, "r", encoding="utf-8") as f:
         connections = json.load(f)
 
-    # Update MongoDB host
-    connections["mongo_default"]["host"] = mongo_ip
+    # Update hosts based on topology
+    connections["mongo_default"]["host"] = topology["mongo_host"]
+    connections["mongo_default"]["port"] = topology["mongo_port"]
+    connections["udata_http"]["host"] = topology["udata_host"]
+    connections["udata_http"]["port"] = topology["udata_port"]
 
-    # Ensure all other connections use host.docker.internal
+    # Ensure local connections use host.docker.internal
     # (127.0.0.1 inside the container does not reach host services)
     for conn_id, conn in connections.items():
         if conn.get("host") == "127.0.0.1":
@@ -156,7 +199,9 @@ def step_import_connections(repo_dir):
     with open(connections_path, "w", encoding="utf-8") as f:
         json.dump(connections, f, indent=2, ensure_ascii=False)
 
-    print(f"  connections.json atualizado: mongo_default.host = {mongo_ip}")
+    print(f"  connections.json atualizado:")
+    print(f"    mongo_default.host = {topology['mongo_host']}")
+    print(f"    udata_http.host   = {topology['udata_host']}")
 
     run(f"docker cp {connections_path} airflow-demo-test:/tmp/connections.json")
 
@@ -167,9 +212,23 @@ def step_import_connections(repo_dir):
     run("docker exec airflow-demo-test airflow connections import /tmp/connections.json")
 
 
-def step_import_variables(repo_dir):
+def step_import_variables(repo_dir, topology):
     banner("3. Importacao das Airflow Variables")
     variables_path = os.path.join(repo_dir, "docs", "variables.json")
+
+    with open(variables_path, "r", encoding="utf-8") as f:
+        variables = json.load(f)
+
+    # Update variables based on topology
+    variables["UDATA_INSTANCE_URL"] = f"http://{topology['udata_host']}:{topology['udata_port']}"
+    variables.setdefault("METRICS_API_URL", "http://host.docker.internal:8006/api")
+
+    with open(variables_path, "w", encoding="utf-8") as f:
+        json.dump(variables, f, indent=4, ensure_ascii=False)
+
+    print(f"  variables.json atualizado:")
+    print(f"    UDATA_INSTANCE_URL = {variables['UDATA_INSTANCE_URL']}")
+
     run(f"docker cp {variables_path} airflow-demo-test:/tmp/variables.json")
     run("docker exec airflow-demo-test airflow variables import /tmp/variables.json")
 
@@ -248,6 +307,12 @@ def main():
     step_prepare_dirs(repo_dir)
     step_prepare_env(repo_dir)
 
+    # Reload .env after potential creation by 2_prepare_env.sh
+    load_dotenv(os.path.join(repo_dir, ".env"))
+
+    # Ask about deployment topology
+    topology = ask_topology()
+
     # Check prerequisites
     for tool in ["docker"]:
         if not shutil.which(tool):
@@ -268,10 +333,10 @@ def main():
     wait_for_airflow(container, timeout=120)
 
     # Step 2: Import connections
-    step_import_connections(repo_dir)
+    step_import_connections(repo_dir, topology)
 
     # Step 3: Import variables
-    step_import_variables(repo_dir)
+    step_import_variables(repo_dir, topology)
 
     # Step 4: Create tables
     step_create_tables(repo_dir)
@@ -279,8 +344,9 @@ def main():
     # Step 5: Trigger
     step_trigger_dag(container)
 
+    webserver_port = os.environ.get("AIRFLOW_WEBSERVER_PORT", "8080")
     banner("Setup concluido!")
-    print(f"  Airflow UI: http://localhost:8080")
+    print(f"  Airflow UI: http://localhost:{webserver_port}")
     print(f"  Container:  {container}")
     print(f"  DAG:        metrics_etl")
     print(f"  Docs:       docs/airflow-configuracao.md\n")
