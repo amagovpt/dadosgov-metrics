@@ -5,28 +5,46 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-UDATA_MONGO_HOST = "10.55.37.143"
-UDATA_MONGO_PORT = 27017
 UDATA_MONGO_DB = "udata"
 METRICS_PG_CONN_ID = "hydra_postgres_csv"
 METRICS_MONGO_DB = "etl_logs"
-METRICS_API_URL = "http://10.55.37.145:8006/api"
+METRICS_API_URL = "http://host.docker.internal:8006/api"
+
+
+def _id_or_slug_query(identifier):
+    """Return a MongoDB query matching by ObjectId or slug."""
+    from bson import ObjectId
+    try:
+        return {"_id": ObjectId(identifier)}
+    except Exception:
+        return {"slug": identifier}
 
 
 def extract_tracking_events():
     """Aggregate views and downloads from tracking_events collection."""
-    from pymongo import MongoClient
+    from airflow.providers.mongo.hooks.mongo import MongoHook
 
-    client = MongoClient(UDATA_MONGO_HOST, UDATA_MONGO_PORT)
+    hook = MongoHook(conn_id="mongo_default")
+    client = hook.get_conn()
     db = client[UDATA_MONGO_DB]
 
-    # Build dataset_id -> organization_id lookup
+    # Build slug -> ObjectId lookup and dataset_id -> organization_id lookup
+    slug_to_oid = {}
     org_lookup = {}
     for doc in db["dataset"].find(
-        {"organization": {"$ne": None}, "deleted": None},
-        {"organization": 1},
+        {"deleted": None},
+        {"slug": 1, "organization": 1},
     ):
-        org_lookup[str(doc["_id"])] = str(doc["organization"])
+        oid = str(doc["_id"])
+        slug_to_oid[doc.get("slug", "")] = oid
+        if doc.get("organization"):
+            org_lookup[oid] = str(doc["organization"])
+
+    def resolve_dataset_id(identifier):
+        """Resolve slug or ObjectId string to a canonical ObjectId string."""
+        if not identifier:
+            return None
+        return slug_to_oid.get(identifier, identifier)
 
     # Build resource_id -> dataset_id lookup
     resource_dataset_lookup = {}
@@ -39,7 +57,7 @@ def extract_tracking_events():
 
     # Daily views per dataset (for PostgreSQL metric.visits_datasets)
     dataset_views_daily = []
-    for doc in db["tracking_events"].aggregate(
+    for doc in db["metric_event"].aggregate(
         [
             {"$match": {"object_type": "dataset", "event_type": "view"}},
             {
@@ -58,7 +76,9 @@ def extract_tracking_events():
             },
         ]
     ):
-        dataset_id = doc["_id"]["object_id"]
+        dataset_id = resolve_dataset_id(doc["_id"]["object_id"])
+        if not dataset_id:
+            continue
         dataset_views_daily.append(
             {
                 "dataset_id": dataset_id,
@@ -70,18 +90,18 @@ def extract_tracking_events():
 
     # Daily downloads per resource (for PostgreSQL metric.visits_resources)
     resource_downloads_daily = []
-    for doc in db["tracking_events"].aggregate(
+    for doc in db["metric_event"].aggregate(
         [
             {
                 "$match": {
                     "event_type": "download",
-                    "resource_id": {"$exists": True, "$ne": None},
+                    "extra.resource_id": {"$exists": True, "$ne": None},
                 }
             },
             {
                 "$group": {
                     "_id": {
-                        "resource_id": "$resource_id",
+                        "resource_id": "$extra.resource_id",
                         "date": {
                             "$dateToString": {
                                 "format": "%Y-%m-%d",
@@ -109,38 +129,40 @@ def extract_tracking_events():
         )
 
     # Total views per dataset (for MongoDB updates)
-    view_counts = {
-        doc["_id"]: doc["total"]
-        for doc in db["tracking_events"].aggregate(
-            [
-                {"$match": {"object_type": "dataset", "event_type": "view"}},
-                {"$group": {"_id": "$object_id", "total": {"$sum": 1}}},
-            ]
-        )
-    }
+    view_counts = {}
+    for doc in db["metric_event"].aggregate(
+        [
+            {"$match": {"object_type": "dataset", "event_type": "view"}},
+            {"$group": {"_id": "$object_id", "total": {"$sum": 1}}},
+        ]
+    ):
+        did = resolve_dataset_id(doc["_id"])
+        if did:
+            view_counts[did] = view_counts.get(did, 0) + doc["total"]
 
     # Total downloads per dataset (for MongoDB updates)
-    download_counts = {
-        doc["_id"]: doc["total"]
-        for doc in db["tracking_events"].aggregate(
-            [
-                {"$match": {"object_type": "dataset", "event_type": "download"}},
-                {"$group": {"_id": "$object_id", "total": {"$sum": 1}}},
-            ]
-        )
-    }
+    download_counts = {}
+    for doc in db["metric_event"].aggregate(
+        [
+            {"$match": {"object_type": "dataset", "event_type": "download"}},
+            {"$group": {"_id": "$object_id", "total": {"$sum": 1}}},
+        ]
+    ):
+        did = resolve_dataset_id(doc["_id"])
+        if did:
+            download_counts[did] = download_counts.get(did, 0) + doc["total"]
 
     # Downloads per individual resource
     resource_downloads = {}
-    for doc in db["tracking_events"].aggregate(
+    for doc in db["metric_event"].aggregate(
         [
             {
                 "$match": {
                     "event_type": "download",
-                    "resource_id": {"$exists": True, "$ne": None},
+                    "extra.resource_id": {"$exists": True, "$ne": None},
                 }
             },
-            {"$group": {"_id": "$resource_id", "total": {"$sum": 1}}},
+            {"$group": {"_id": "$extra.resource_id", "total": {"$sum": 1}}},
         ]
     ):
         resource_downloads[doc["_id"]] = doc["total"]
@@ -148,7 +170,7 @@ def extract_tracking_events():
     # Views per organization
     org_views = {
         doc["_id"]: doc["total"]
-        for doc in db["tracking_events"].aggregate(
+        for doc in db["metric_event"].aggregate(
             [
                 {"$match": {"object_type": "organization", "event_type": "view"}},
                 {"$group": {"_id": "$object_id", "total": {"$sum": 1}}},
@@ -159,7 +181,7 @@ def extract_tracking_events():
     # Views per reuse
     reuse_views = {
         doc["_id"]: doc["total"]
-        for doc in db["tracking_events"].aggregate(
+        for doc in db["metric_event"].aggregate(
             [
                 {"$match": {"object_type": "reuse", "event_type": "view"}},
                 {"$group": {"_id": "$object_id", "total": {"$sum": 1}}},
@@ -170,7 +192,7 @@ def extract_tracking_events():
     # Views per dataservice
     dataservice_views = {
         doc["_id"]: doc["total"]
-        for doc in db["tracking_events"].aggregate(
+        for doc in db["metric_event"].aggregate(
             [
                 {"$match": {"object_type": "dataservice", "event_type": "view"}},
                 {"$group": {"_id": "$object_id", "total": {"$sum": 1}}},
@@ -207,7 +229,7 @@ def extract_tracking_events():
         ),
     }
 
-    total_events = db["tracking_events"].count_documents({})
+    total_events = db["metric_event"].count_documents({})
     client.close()
 
     logger.info(
@@ -370,20 +392,21 @@ def update_udata_metrics(ti):
     """Read totals from datasets_total (PostgREST) and write to udata MongoDB.
     Also computes per-object statistics and per-resource download counts."""
     import requests
-    from pymongo import MongoClient
-    from bson import ObjectId
+    from airflow.providers.mongo.hooks.mongo import MongoHook
 
     extracted = ti.xcom_pull(task_ids="extract_tracking_events")
     if not extracted:
         raise ValueError("No data received")
 
-    client = MongoClient(UDATA_MONGO_HOST, UDATA_MONGO_PORT)
+    hook = MongoHook(conn_id="mongo_default")
+    client = hook.get_conn()
     db = client[UDATA_MONGO_DB]
     updated = 0
     page = 1
+    max_pages = 10000
 
     # 1. Update views + downloads from PostgreSQL (datasets_total)
-    while True:
+    while page <= max_pages:
         url = f"{METRICS_API_URL}/datasets_total/data/?visit__greater=0&page_size=50&page={page}"
         resp = requests.get(url, timeout=30)
         resp.raise_for_status()
@@ -391,14 +414,12 @@ def update_udata_metrics(ti):
 
         for row in data["data"]:
             dataset_id = row.get("dataset_id")
-            visit = row.get("visit", 0)
-            download_resource = row.get("download_resource", 0)
-            try:
-                oid = ObjectId(dataset_id)
-            except Exception:
+            visit = row.get("visit") or 0
+            download_resource = row.get("download_resource") or 0
+            if not dataset_id:
                 continue
             db["dataset"].update_one(
-                {"_id": oid},
+                _id_or_slug_query(dataset_id),
                 {
                     "$set": {
                         "metrics.views": visit,
@@ -505,31 +526,22 @@ def update_udata_metrics(ti):
         )
 
     for org_id, views in extracted.get("org_views", {}).items():
-        try:
-            db["organization"].update_one(
-                {"_id": ObjectId(org_id)},
-                {"$set": {"metrics.views": views}},
-            )
-        except Exception:
-            pass
+        db["organization"].update_one(
+            _id_or_slug_query(org_id),
+            {"$set": {"metrics.views": views}},
+        )
 
     for reuse_id, views in extracted.get("reuse_views", {}).items():
-        try:
-            db["reuse"].update_one(
-                {"_id": ObjectId(reuse_id)},
-                {"$set": {"metrics.views": views}},
-            )
-        except Exception:
-            pass
+        db["reuse"].update_one(
+            _id_or_slug_query(reuse_id),
+            {"$set": {"metrics.views": views}},
+        )
 
     for ds_id, views in extracted.get("dataservice_views", {}).items():
-        try:
-            db["dataservice"].update_one(
-                {"_id": ObjectId(ds_id)},
-                {"$set": {"metrics.views": views}},
-            )
-        except Exception:
-            pass
+        db["dataservice"].update_one(
+            _id_or_slug_query(ds_id),
+            {"$set": {"metrics.views": views}},
+        )
 
     # 5. Update site-level metrics
     site_counts = extracted["site_counts"]
@@ -605,10 +617,15 @@ def save_to_mongodb(ti):
 with DAG(
     dag_id="metrics_etl",
     start_date=datetime(2026, 1, 1),
-    schedule="* * * * *",
+    schedule="*/15 * * * *",
     catchup=False,
+    max_active_runs=1,
     tags=["metrics"],
-    default_args={"retries": 3, "retry_delay": timedelta(minutes=5)},
+    default_args={
+        "retries": 3,
+        "retry_delay": timedelta(minutes=5),
+        "execution_timeout": timedelta(minutes=30),
+    },
 ) as dag:
     extrair = PythonOperator(
         task_id="extract_tracking_events", python_callable=extract_tracking_events

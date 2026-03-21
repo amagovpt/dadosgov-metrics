@@ -22,6 +22,23 @@ import sys
 import time
 
 
+def load_dotenv(filepath):
+    """Load variables from a .env file into os.environ."""
+    if not os.path.isfile(filepath):
+        return
+    with open(filepath, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            key = key.strip()
+            value = value.strip()
+            if not key:
+                continue
+            os.environ.setdefault(key, value)
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -106,8 +123,8 @@ def step_prepare_env(repo_dir):
 def step_docker_build(repo_dir):
     banner("1. Build e arranque dos containers")
 
-    step("Build da imagem Airflow...")
-    run(f"docker compose build --no-cache webserver", cwd=repo_dir)
+    # step("Build da imagem Airflow...")
+    # run(f"docker compose build --no-cache webserver", cwd=repo_dir)
 
     step("Arranque dos containers...")
     run(f"docker compose up -d", cwd=repo_dir)
@@ -121,12 +138,20 @@ def step_import_connections(repo_dir):
 
     connections_path = os.path.join(repo_dir, "docs", "connections.json")
 
-    mongo_ip = ask_ip("MongoDB", "127.0.0.1")
+    mongo_ip = ask_ip("MongoDB (udata)", "10.55.37.40")
 
     with open(connections_path, "r", encoding="utf-8") as f:
         connections = json.load(f)
 
+    # Update MongoDB host
     connections["mongo_default"]["host"] = mongo_ip
+
+    # Ensure all other connections use host.docker.internal
+    # (127.0.0.1 inside the container does not reach host services)
+    for conn_id, conn in connections.items():
+        if conn.get("host") == "127.0.0.1":
+            connections[conn_id]["host"] = "host.docker.internal"
+            print(f"  {conn_id}: host corrigido para host.docker.internal")
 
     with open(connections_path, "w", encoding="utf-8") as f:
         json.dump(connections, f, indent=2, ensure_ascii=False)
@@ -134,6 +159,11 @@ def step_import_connections(repo_dir):
     print(f"  connections.json atualizado: mongo_default.host = {mongo_ip}")
 
     run(f"docker cp {connections_path} airflow-demo-test:/tmp/connections.json")
+
+    # Delete existing connections to allow re-import with updated values
+    for conn_id in connections:
+        docker_exec("airflow-demo-test", f"airflow connections delete {conn_id}")
+
     run("docker exec airflow-demo-test airflow connections import /tmp/connections.json")
 
 
@@ -145,21 +175,35 @@ def step_import_variables(repo_dir):
 
 
 def step_create_tables(repo_dir):
-    banner("4. Criacao das tabelas no Hydra (PostgreSQL)")
-
-    hydra_ip = ask_ip("Hydra (PostgreSQL)", "127.0.0.1")
-    hydra_host = f"{hydra_ip}:5432"
+    banner("4. Criacao das tabelas no Hydra CSV (PostgreSQL porta 5434)")
 
     sql_script = os.path.join(repo_dir, "scripts", "create_tables.sql")
     if not os.path.isfile(sql_script):
         print(f"  ERRO: Script nao encontrado em {sql_script}")
         return
 
-    step(f"Executando {sql_script} em {hydra_host}...")
-    run(
-        f'psql -h {hydra_ip} -p 5432 -U postgres -f "{sql_script}"',
-        check=False,
+    step("Executando create_tables.sql via Airflow (hydra_postgres_csv)...")
+
+    # Copy SQL script into the Airflow container
+    run(f"docker cp {sql_script} airflow-demo-test:/tmp/create_tables.sql")
+
+    # Execute via Python inside the container using the Airflow connection
+    # This avoids needing psql on the host and uses the correct connection
+    r = docker_exec(
+        "airflow-demo-test",
+        'python3 -c "'
+        "from airflow.providers.postgres.hooks.postgres import PostgresHook; "
+        "hook = PostgresHook(postgres_conn_id='hydra_postgres_csv'); "
+        "conn = hook.get_conn(); cur = conn.cursor(); "
+        "cur.execute(open('/tmp/create_tables.sql').read()); "
+        "conn.commit(); cur.close(); conn.close(); "
+        "print('Tabelas e views criadas com sucesso')"
+        '"',
     )
+    if r.returncode == 0:
+        print(f"  {r.stdout.strip()}")
+    else:
+        print(f"  ERRO: {r.stderr.strip()}")
 
 
 def step_trigger_dag(container):
@@ -196,6 +240,9 @@ def main():
     repo_dir = os.path.dirname(os.path.abspath(__file__))
     os.chdir(repo_dir)
     print(f"  Repositorio: {repo_dir}")
+
+    # Load .env variables
+    load_dotenv(os.path.join(repo_dir, ".env"))
 
     # Step 0: Preparar diretorios e .env (primeiros passos obrigatorios)
     step_prepare_dirs(repo_dir)

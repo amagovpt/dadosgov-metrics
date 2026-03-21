@@ -4,7 +4,7 @@
     "description": "API Tabular (PostgREST)",
     "login": "",
     "password": null,
-    "host": "127.0.0.1",
+    "host": "host.docker.internal",
     "port": 8006,
     "schema": "",
     "extra": ""
@@ -14,7 +14,7 @@
     "description": "Hydra main PostgreSQL database",
     "login": "postgres",
     "password": "postgres",
-    "host": "127.0.0.1",
+    "host": "host.docker.internal",
     "port": 5432,
     "schema": "postgres",
     "extra": ""
@@ -24,7 +24,7 @@
     "description": "Hydra CSV PostgreSQL database (used by api-tabular/PostgREST)",
     "login": "postgres",
     "password": "postgres",
-    "host": "127.0.0.1",
+    "host": "host.docker.internal",
     "port": 5434,
     "schema": "postgres",
     "extra": null
@@ -34,7 +34,7 @@
     "description": "MongoDB udata (sem autenticação)",
     "login": "",
     "password": null,
-    "host": "127.0.0.1",
+    "host": "10.55.37.40",
     "port": 27017,
     "schema": "",
     "extra": "{\"srv\": false, \"ssl\": false, \"allow_insecure\": false}"
@@ -44,7 +44,7 @@
     "description": "udata API",
     "login": "",
     "password": null,
-    "host": "127.0.0.1",
+    "host": "host.docker.internal",
     "port": 7000,
     "schema": "",
     "extra": ""

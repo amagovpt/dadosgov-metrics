@@ -1,3 +1,6 @@
+-- Create schema if it doesn't exist
+CREATE SCHEMA IF NOT EXISTS metric;
+
 -- Logs visits tables
 CREATE TABLE IF NOT EXISTS metric.visits_datasets
 (
