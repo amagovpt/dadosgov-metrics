@@ -10,6 +10,7 @@ mise.local.toml
 .vscode/
 node_modules/
 
-dadosgov/data-engineering-stack/scripts/build
-dadosgov/data-engineering-stack/scripts/import_matomo_metrics.egg-info
-dadosgov/data-engineering-stack/scripts/.venv
+data-engineering-stack/scripts/build
+data-engineering-stack/scripts/import_matomo_metrics.egg-info
+data-engineering-stack/scripts/.venv
+data-engineering-stack/scripts/venv
