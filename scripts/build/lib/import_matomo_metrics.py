@@ -28,7 +28,6 @@ import sys
 from collections import defaultdict
 from datetime import datetime, timedelta
 
-import os
 import psycopg2
 import requests
 from pymongo import MongoClient
@@ -49,9 +48,6 @@ PG_PORT = 5434
 PG_USER = "postgres"
 PG_PASSWORD = "postgres"
 PG_DB = "postgres"
-
-# SQL File path for initialization
-SQL_FILE = os.path.join(os.path.dirname(__file__), "create_tables.sql")
 
 # URL patterns to extract object type and ID
 PATTERNS = {
@@ -295,28 +291,6 @@ def ensure_upsert_indexes(conn):
     cur.close()
 
 
-def ensure_database_setup(conn):
-    """Execute the create_tables.sql file to ensure schema and tables exist."""
-    print(f"  Ensuring database schema and tables (from {os.path.basename(SQL_FILE)})...")
-    if not os.path.exists(SQL_FILE):
-        print(f"    Warning: SQL file {SQL_FILE} not found. Skipping full setup.")
-        return
-
-    cur = conn.cursor()
-    with open(SQL_FILE, 'r') as f:
-        sql_content = f.read()
-
-    try:
-        cur.execute(sql_content)
-        conn.commit()
-        print("    Database setup finished successfully!")
-    except Exception as e:
-        conn.rollback()
-        print(f"    Error during database setup: {e}")
-    finally:
-        cur.close()
-
-
 def main():
     parser = argparse.ArgumentParser(description="Import Matomo metrics into PostgreSQL")
     parser.add_argument("--date", help="Date to import (YYYY-MM-DD). Default: yesterday")
@@ -342,7 +316,6 @@ def main():
     print(f"Connecting to PostgreSQL {PG_HOST}:{PG_PORT}...")
     conn = psycopg2.connect(host=PG_HOST, port=PG_PORT, user=PG_USER, password=PG_PASSWORD, dbname=PG_DB)
 
-    ensure_database_setup(conn)
     ensure_upsert_indexes(conn)
 
     for i in range(args.days):
