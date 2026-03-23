@@ -392,10 +392,29 @@ def refresh_materialized_views():
     return {"refreshed": refreshed}
 
 
+def _get_with_retry(url, timeout=30, max_retries=3):
+    """GET url with retry on ChunkedEncodingError / connection errors."""
+    import time
+    import requests
+
+    for attempt in range(max_retries):
+        try:
+            resp = requests.get(url, timeout=timeout)
+            resp.raise_for_status()
+            return resp.json()
+        except (requests.exceptions.ChunkedEncodingError,
+                requests.exceptions.ConnectionError) as exc:
+            if attempt == max_retries - 1:
+                raise
+            wait = 2 ** attempt
+            logger.warning("Request failed (%s), retrying in %ds (attempt %d/%d)",
+                           exc, wait, attempt + 1, max_retries)
+            time.sleep(wait)
+
+
 def update_udata_metrics(ti):
     """Read totals from datasets_total (PostgREST) and write to udata MongoDB.
     Also computes per-object statistics and per-resource download counts."""
-    import requests
     from airflow.providers.mongo.hooks.mongo import MongoHook
 
     extracted = ti.xcom_pull(task_ids="extract_tracking_events")
@@ -412,9 +431,7 @@ def update_udata_metrics(ti):
     # 1. Update views + downloads from PostgreSQL (datasets_total)
     while page <= max_pages:
         url = f"{METRICS_API_URL}/datasets_total/data/?visit__greater=0&page_size=50&page={page}"
-        resp = requests.get(url, timeout=30)
-        resp.raise_for_status()
-        data = resp.json()
+        data = _get_with_retry(url)
 
         for row in data["data"]:
             dataset_id = row.get("dataset_id")
