@@ -39,7 +39,7 @@ MATOMO_TOKEN = "2a62abafa550d3aaba8c7a6a4bd1769b"
 MATOMO_SITE_ID = 3
 
 # MongoDB config (for slug -> ObjectId resolution)
-MONGO_HOST = "10.55.37.40"
+MONGO_HOST = "10.55.37.143"
 MONGO_PORT = 27017
 MONGO_DB = "udata"
 
