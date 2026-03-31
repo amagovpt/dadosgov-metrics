@@ -28,8 +28,10 @@ HYDRA_USER=postgres
 HYDRA_PASSWORD=postgres
 HYDRA_DB=postgres
 
-# udata (MongoDB + API) - usar IP remoto para instalacao distribuida
+# udata API - usar IP remoto para instalacao distribuida
 UDATA_HOST=host.docker.internal
 UDATA_PORT=7000
-MONGO_HOST=$UDATA_HOST
-MONGO_PORT=27017
+
+# MongoDB - usar IP remoto para instalacao distribuida
+MONGODB_HOST=host.docker.internal
+MONGODB_PORT=27017

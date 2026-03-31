@@ -90,6 +90,37 @@ def ask_host(label, default):
         print(f"    Host invalido: {host}. Tente novamente.")
 
 
+def update_env_values(values, filepath=None):
+    """Update or append key=value pairs in the .env file."""
+    if filepath is None:
+        filepath = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+    if not os.path.isfile(filepath):
+        return
+    with open(filepath, "r", encoding="utf-8") as f:
+        lines = f.readlines()
+
+    updated_keys = set()
+    new_lines = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#") and "=" in stripped:
+            key = stripped.split("=", 1)[0].strip()
+            if key in values:
+                new_lines.append(f"{key}={values[key]}\n")
+                updated_keys.add(key)
+                continue
+        new_lines.append(line)
+
+    # Append any keys not already present
+    for key, val in values.items():
+        if key not in updated_keys:
+            new_lines.append(f"{key}={val}\n")
+
+    with open(filepath, "w", encoding="utf-8") as f:
+        f.writelines(new_lines)
+    print("  .env atualizado com os valores da topologia.")
+
+
 def ask_topology():
     """Ask the user about deployment topology and return host configuration."""
     banner("Topologia de Instalacao")
@@ -102,22 +133,35 @@ def ask_topology():
     config = {
         "udata_host": os.environ.get("UDATA_HOST", "host.docker.internal"),
         "udata_port": int(os.environ.get("UDATA_PORT", "7000")),
-        "mongo_host": os.environ.get("MONGO_HOST", "host.docker.internal"),
-        "mongo_port": int(os.environ.get("MONGO_PORT", "27017")),
+        "mongo_host": os.environ.get("MONGODB_HOST", "host.docker.internal"),
+        "mongo_port": int(os.environ.get("MONGODB_PORT", "27017")),
     }
 
     if choice == "2":
         print("\n  Modo distribuido: udata esta num servidor remoto.")
-        udata_host = ask_host("servidor udata (MongoDB + udata API)", config["udata_host"])
+        mongo_host = ask_host("servidor MongoDB", config["mongo_host"])
+        config["mongo_host"] = mongo_host
+        udata_host = ask_host("servidor udata API", config["udata_host"])
         config["udata_host"] = udata_host
-        config["mongo_host"] = udata_host
+        config["udata_port"] = None  # remoto: sem porta (porta 80 default)
     else:
         mongo_ip = ask_ip("MongoDB (udata)", "10.55.37.40")
         config["mongo_host"] = mongo_ip
 
+    # Persistir valores escolhidos no .env
+    update_env_values({
+        "UDATA_HOST": config["udata_host"],
+        "UDATA_PORT": str(config["udata_port"]) if config["udata_port"] else "",
+        "MONGODB_HOST": config["mongo_host"],
+        "MONGODB_PORT": str(config["mongo_port"]),
+    })
+
     banner("Configuracao de Rede")
     print(f"  MongoDB:        {config['mongo_host']}:{config['mongo_port']}")
-    print(f"  udata API:      {config['udata_host']}:{config['udata_port']}")
+    if config["udata_port"]:
+        print(f"  udata API:      {config['udata_host']}:{config['udata_port']}")
+    else:
+        print(f"  udata API:      {config['udata_host']}")
     print(f"  Hydra/API-Tab:  host.docker.internal (local)")
 
     return config
@@ -187,7 +231,10 @@ def step_import_connections(repo_dir, topology):
     connections["mongo_default"]["host"] = topology["mongo_host"]
     connections["mongo_default"]["port"] = topology["mongo_port"]
     connections["udata_http"]["host"] = topology["udata_host"]
-    connections["udata_http"]["port"] = topology["udata_port"]
+    if topology["udata_port"]:
+        connections["udata_http"]["port"] = topology["udata_port"]
+    else:
+        connections["udata_http"].pop("port", None)
 
     # Ensure local connections use host.docker.internal
     # (127.0.0.1 inside the container does not reach host services)
@@ -220,7 +267,10 @@ def step_import_variables(repo_dir, topology):
         variables = json.load(f)
 
     # Update variables based on topology
-    variables["UDATA_INSTANCE_URL"] = f"http://{topology['udata_host']}:{topology['udata_port']}"
+    if topology["udata_port"]:
+        variables["UDATA_INSTANCE_URL"] = f"http://{topology['udata_host']}:{topology['udata_port']}"
+    else:
+        variables["UDATA_INSTANCE_URL"] = f"http://{topology['udata_host']}"
     variables.setdefault("METRICS_API_URL", "http://host.docker.internal:8006/api")
 
     with open(variables_path, "w", encoding="utf-8") as f:
