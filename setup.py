@@ -219,7 +219,7 @@ def step_docker_build(repo_dir):
     run(f"docker compose ps", cwd=repo_dir)
 
 
-def step_import_connections(repo_dir, topology):
+def step_import_connections(repo_dir, topology, container):
     banner("2. Importacao das Airflow Connections")
 
     connections_path = os.path.join(repo_dir, "docs", "connections.json")
@@ -250,16 +250,16 @@ def step_import_connections(repo_dir, topology):
     print(f"    mongo_default.host = {topology['mongo_host']}")
     print(f"    udata_http.host   = {topology['udata_host']}")
 
-    run(f"docker cp {connections_path} airflow-db:/tmp/connections.json")
+    run(f"docker cp {connections_path} {container}:/tmp/connections.json")
 
     # Delete existing connections to allow re-import with updated values
     for conn_id in connections:
-        docker_exec("airflow-db", f"airflow connections delete {conn_id}")
+        docker_exec(container, f"airflow connections delete {conn_id}")
 
-    run("docker exec airflow-db airflow connections import /tmp/connections.json")
+    run(f"docker exec {container} airflow connections import /tmp/connections.json")
 
 
-def step_import_variables(repo_dir, topology):
+def step_import_variables(repo_dir, topology, container):
     banner("3. Importacao das Airflow Variables")
     variables_path = os.path.join(repo_dir, "docs", "variables.json")
 
@@ -279,11 +279,11 @@ def step_import_variables(repo_dir, topology):
     print(f"  variables.json atualizado:")
     print(f"    UDATA_INSTANCE_URL = {variables['UDATA_INSTANCE_URL']}")
 
-    run(f"docker cp {variables_path} airflow-db:/tmp/variables.json")
-    run("docker exec airflow-db airflow variables import /tmp/variables.json")
+    run(f"docker cp {variables_path} {container}:/tmp/variables.json")
+    run(f"docker exec {container} airflow variables import /tmp/variables.json")
 
 
-def step_create_tables(repo_dir):
+def step_create_tables(repo_dir, container):
     banner("4. Criacao das tabelas no Hydra CSV (PostgreSQL porta 5434)")
 
     sql_script = os.path.join(repo_dir, "scripts", "create_tables.sql")
@@ -294,12 +294,12 @@ def step_create_tables(repo_dir):
     step("Executando create_tables.sql via Airflow (hydra_postgres_csv)...")
 
     # Copy SQL script into the Airflow container
-    run(f"docker cp {sql_script} airflow-db:/tmp/create_tables.sql")
+    run(f"docker cp {sql_script} {container}:/tmp/create_tables.sql")
 
     # Execute via Python inside the container using the Airflow connection
     # This avoids needing psql on the host and uses the correct connection
     r = docker_exec(
-        "airflow-db",
+        container,
         'python3 -c "'
         "from airflow.providers.postgres.hooks.postgres import PostgresHook; "
         "hook = PostgresHook(postgres_conn_id='hydra_postgres_csv'); "
@@ -316,11 +316,11 @@ def step_create_tables(repo_dir):
 
 
 def step_setup_api_tabular():
-    banner("5. Setup api-tabular com pm2")
+    banner("5. Setup api-tabular-pt com pm2")
 
-    api_dir = "/opt/api-tabular"
+    api_dir = "/opt/api-tabular-pt"
     if not os.path.isdir(api_dir):
-        print(f"  AVISO: Diretoria {api_dir} nao encontrada. A saltar setup do api-tabular.")
+        print(f"  AVISO: Diretoria {api_dir} nao encontrada. A saltar setup do api-tabular-pt.")
         return
 
     # Instalar Node.js (necessario para pm2) via dnf no Rocky Linux 9
@@ -338,8 +338,8 @@ def step_setup_api_tabular():
         return
     print(f"  {r.stdout.strip()}")
 
-    # Arrancar api-tabular com pm2
-    step("Arrancando api-tabular via pm2...")
+    # Arrancar api-tabular-pt com pm2
+    step("Arrancando api-tabular-pt via pm2...")
     gunicorn_cmd = (
         "uv run gunicorn api_tabular.metrics.app:app_factory"
         " --bind 0.0.0.0:8006"
@@ -348,14 +348,14 @@ def step_setup_api_tabular():
         " --access-logfile -"
     )
     r = run(
-        f'pm2 start "{gunicorn_cmd}" --name api-tabular --cwd {api_dir}',
+        f'pm2 start "{gunicorn_cmd}" --name api-tabular-pt --cwd {api_dir}',
         check=False, capture=True,
     )
     if r.returncode == 0:
-        print("  api-tabular arrancado com sucesso via pm2.")
+        print("  api-tabular-pt arrancado com sucesso via pm2.")
         run("pm2 save", check=False, capture=True)
     else:
-        print(f"  ERRO ao arrancar api-tabular: {r.stderr.strip()}")
+        print(f"  ERRO ao arrancar api-tabular-pt: {r.stderr.strip()}")
 
 
 def step_trigger_dag(container):
@@ -417,7 +417,9 @@ def main():
         print("  ERRO: 'docker compose' nao disponivel.")
         sys.exit(1)
 
-    container = "airflow-db"
+    env_type = os.environ.get("AIRFLOW_ENV_TYPE") or "demo"
+    env_name = os.environ.get("AIRFLOW_ENV_NAME") or "test"
+    container = f"airflow-{env_type}-{env_name}"
 
     # Step 1: Docker build & up
     step_docker_build(repo_dir)
@@ -426,15 +428,15 @@ def main():
     wait_for_airflow(container, timeout=120)
 
     # Step 2: Import connections
-    step_import_connections(repo_dir, topology)
+    step_import_connections(repo_dir, topology, container)
 
     # Step 3: Import variables
-    step_import_variables(repo_dir, topology)
+    step_import_variables(repo_dir, topology, container)
 
     # Step 4: Create tables
-    step_create_tables(repo_dir)
+    step_create_tables(repo_dir, container)
 
-    # Step 5: Setup api-tabular com pm2
+    # Step 5: Setup api-tabular-pt com pm2
     step_setup_api_tabular()
 
     # Step 6: Trigger

@@ -21,7 +21,7 @@
   },
   "hydra_postgres_csv": {
     "conn_type": "postgres",
-    "description": "Hydra CSV PostgreSQL database (used by api-tabular/PostgREST)",
+    "description": "Hydra CSV PostgreSQL database (used by api-tabular-pt/PostgREST)",
     "login": "postgres",
     "password": "postgres",
     "host": "host.docker.internal",
@@ -34,7 +34,7 @@
     "description": "MongoDB udata (sem autenticação)",
     "login": "",
     "password": null,
-    "host": "10.55.37.40",
+    "host": "10.55.37.143",
     "port": 27017,
     "schema": "",
     "extra": "{\"srv\": false, \"ssl\": false, \"allow_insecure\": false}"
@@ -44,8 +44,7 @@
     "description": "udata API",
     "login": "",
     "password": null,
-    "host": "host.docker.internal",
-    "port": 7000,
+    "host": "172.31.204.12",
     "schema": "",
     "extra": ""
   }

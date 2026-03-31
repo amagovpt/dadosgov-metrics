@@ -1,6 +1,6 @@
 # Configuracao do Apache Airflow — Data Engineering Stack
 
-Este documento descreve passo a passo como configurar o Airflow para funcionar com os servicos do ecossistema: **udata**, **api-tabular (PostgREST)**, **Hydra (PostgreSQL)** e **MongoDB**.
+Este documento descreve passo a passo como configurar o Airflow para funcionar com os servicos do ecossistema: **udata**, **api-tabular-pt (PostgREST)**, **Hydra (PostgreSQL)** e **MongoDB**.
 
 ---
 
@@ -31,7 +31,7 @@ Este documento descreve passo a passo como configurar o Airflow para funcionar c
 | **Redis** (broker) | `6379` | `0.0.0.0` | Container `udata-front-pt-broker-1` |
 | **Hydra PostgreSQL** | `5432` | `0.0.0.0` | Container `hydra-pt-database-1` |
 | **Hydra PostgreSQL CSV** | `5434` | `0.0.0.0` | Container `hydra-pt-database-csv-1` |
-| **PostgREST** | `8080` | `0.0.0.0` | Container `api-tabular-pt-postgrest-1` |
+| **PostgREST** | `8080` | `0.0.0.0` | Container `api-tabular-pt-pt-postgrest-1` |
 | **API Tabular** (tabular) | `8005` | host | Leitura de recursos CSV |
 | **API Metrics** | `8006` | host | Leitura de metricas agregadas |
 
@@ -116,7 +116,7 @@ docker exec <container> airflow connections add "hydra_postgres" \
   --conn-description "Hydra main PostgreSQL database"
 ```
 
-### 4.2. Hydra PostgreSQL CSV — Base de dados usada pelo api-tabular/PostgREST
+### 4.2. Hydra PostgreSQL CSV — Base de dados usada pelo api-tabular-pt/PostgREST
 
 ```bash
 docker exec <container> airflow connections add "hydra_postgres_csv" \
@@ -126,7 +126,7 @@ docker exec <container> airflow connections add "hydra_postgres_csv" \
   --conn-login postgres \
   --conn-password postgres \
   --conn-schema postgres \
-  --conn-description "Hydra CSV PostgreSQL database (used by api-tabular/PostgREST)"
+  --conn-description "Hydra CSV PostgreSQL database (used by api-tabular-pt/PostgREST)"
 ```
 
 ### 4.3. API Tabular (HTTP)
