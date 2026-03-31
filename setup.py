@@ -131,10 +131,10 @@ def ask_topology():
     choice = ask("Opcao", "1")
 
     config = {
-        "udata_host": os.environ.get("UDATA_HOST", "host.docker.internal"),
-        "udata_port": int(os.environ.get("UDATA_PORT", "7000")),
-        "mongo_host": os.environ.get("MONGODB_HOST", "host.docker.internal"),
-        "mongo_port": int(os.environ.get("MONGODB_PORT", "27017")),
+        "udata_host": os.environ.get("UDATA_HOST") or "host.docker.internal",
+        "udata_port": int(os.environ.get("UDATA_PORT") or "7000"),
+        "mongo_host": os.environ.get("MONGODB_HOST") or "host.docker.internal",
+        "mongo_port": int(os.environ.get("MONGODB_PORT") or "27017"),
     }
 
     if choice == "2":
