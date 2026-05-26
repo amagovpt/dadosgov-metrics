@@ -37,3 +37,4 @@ docker-compose up --build -d
 ## Connections
 
 Connections can be created manually or with python scripts `createConn.py` (using Airflow API) inside each projects. You need also to add your ssh key inside `ssh` folder of repository for the container to be able to see it in `/home/airflow/.ssh/` folder of container.
+# dadosgov-metrics
