@@ -316,46 +316,79 @@ def step_create_tables(repo_dir, container):
 
 
 def step_setup_api_tabular():
-    banner("5. Setup api-tabular-pt com pm2")
+    banner("5. Arranque do stack completo via pm2 (setup_pm2.sh)")
 
     api_dir = "/opt/api-tabular-pt"
     if not os.path.isdir(api_dir):
         print(f"  AVISO: Diretoria {api_dir} nao encontrada. A saltar setup do api-tabular-pt.")
         return
 
-    # Instalar Node.js (necessario para pm2) via dnf no Rocky Linux 9
-    step("Instalando Node.js e npm...")
-    r = run("sudo dnf install -y nodejs npm", check=False, capture=True)
-    if r.returncode != 0:
-        print(f"  ERRO ao instalar Node.js: {r.stderr.strip()}")
+    # O setup_pm2.sh arranca tambem os servicos hydra a partir de /opt/hydra-pt
+    # (via cwd no ecosystem.config.js). Sem esse repo, o arranque seria parcial
+    # (apps hydra ficariam em 'errored'), por isso abortamos aqui.
+    hydra_dir = "/opt/hydra-pt"
+    if not os.path.isdir(hydra_dir):
+        print(f"  ERRO: Diretoria {hydra_dir} nao encontrada.")
+        print("  O stack completo requer o repo hydra-pt. A abortar para evitar arranque parcial.")
         return
 
-    # Instalar pm2 globalmente
-    step("Instalando pm2...")
-    r = run("sudo npm install -g pm2", check=False, capture=True)
-    if r.returncode != 0:
-        print(f"  ERRO ao instalar pm2: {r.stderr.strip()}")
-        return
-    print(f"  {r.stdout.strip()}")
-
-    # Arrancar api-tabular-pt com pm2
-    step("Arrancando api-tabular-pt via pm2...")
-    gunicorn_cmd = (
-        "uv run gunicorn api_tabular.metrics.app:app_factory"
-        " --bind 0.0.0.0:8006"
-        " --worker-class aiohttp.GunicornWebWorker"
-        " --workers 4"
-        " --access-logfile -"
-    )
-    r = run(
-        f'pm2 start "{gunicorn_cmd}" --name api-tabular-pt --cwd {api_dir}',
-        check=False, capture=True,
-    )
-    if r.returncode == 0:
-        print("  api-tabular-pt arrancado com sucesso via pm2.")
-        run("pm2 save", check=False, capture=True)
+    # Node.js + npm (necessarios para o pm2). So instala se ainda nao existirem.
+    if shutil.which("node") and shutil.which("npm"):
+        print(f"  Node.js/npm ja instalados ({shutil.which('node')}). A ignorar.")
     else:
-        print(f"  ERRO ao arrancar api-tabular-pt: {r.stderr.strip()}")
+        step("Instalando Node.js e npm...")
+        r = run("sudo dnf install -y nodejs npm", check=False, capture=True)
+        if r.returncode != 0 or not shutil.which("node"):
+            print(f"  ERRO ao instalar Node.js: {r.stderr.strip()}")
+            return
+        print(f"  Node.js instalado: {shutil.which('node')}")
+
+    # pm2 (global, via npm). So instala se ainda nao existir.
+    if shutil.which("pm2"):
+        print(f"  pm2 ja instalado ({shutil.which('pm2')}). A ignorar.")
+    else:
+        step("Instalando pm2...")
+        r = run("sudo npm install -g pm2", check=False, capture=True)
+        if r.returncode != 0:
+            print(f"  ERRO ao instalar pm2: {r.stderr.strip()}")
+            return
+        print("  pm2 instalado com sucesso.")
+
+    # 'uv' e necessario para os apps arrancarem (o ecosystem usa 'uv run ...').
+    # Instalacao por-utilizador (sem sudo); so instala se ainda nao existir.
+    def _uv_path():
+        home_uv = os.path.expanduser("~/.local/bin/uv")
+        for candidate in (shutil.which("uv"), home_uv, "/home/dev/.local/bin/uv"):
+            if candidate and os.path.isfile(candidate):
+                return candidate
+        return None
+
+    if _uv_path():
+        print(f"  uv ja instalado ({_uv_path()}). A ignorar.")
+    else:
+        step("Instalando uv (instalador oficial, para o utilizador atual)...")
+        r = run("curl -LsSf https://astral.sh/uv/install.sh | sh", check=False, capture=True)
+        if _uv_path():
+            print(f"  uv instalado: {_uv_path()}")
+        else:
+            print(f"  AVISO: falha ao instalar uv: {(r.stderr or r.stdout).strip()}")
+            print("         Instale manualmente: curl -LsSf https://astral.sh/uv/install.sh | sh")
+
+    # Arrancar TODO o stack (hydra-app/crawler/worker + api-tabular/metrics)
+    # + pm2-logrotate + servico systemd de boot, em vez de arrancar apenas a
+    # app de metricas inline. Delega no script reproduzivel do api-tabular-pt,
+    # garantindo que apos o setup das metricas todo o sistema fica a correr.
+    setup_script = os.path.join(api_dir, "scripts", "setup_pm2.sh")
+    if not os.path.isfile(setup_script):
+        print(f"  ERRO: Script nao encontrado em {setup_script}")
+        return
+
+    step(f"Arrancando todo o stack via {setup_script}...")
+    r = run(f"bash {setup_script}", check=False)
+    if r.returncode == 0:
+        print("  Stack completo arrancado com sucesso via pm2 (setup_pm2.sh).")
+    else:
+        print("  ERRO ao arrancar o stack via setup_pm2.sh.")
 
 
 def step_trigger_dag(container):
@@ -387,6 +420,20 @@ def main():
     banner("Setup do Data Engineering Stack")
     print("  Este script configura o ambiente Airflow completo.")
     print("  Baseado em: docs/airflow-configuracao.md\n")
+
+    # Este setup deve correr como utilizador normal (ex.: 'dev'), nao como root.
+    # O uv/pm2 sao por-utilizador: como root iriam para /root/.local/bin e os apps
+    # (que esperam /home/dev/.local/bin/uv) nao os encontrariam. Os comandos que
+    # precisam de privilegios ja usam 'sudo' internamente.
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        print("  AVISO: o setup.py esta a correr como ROOT.")
+        print("  Recomendado: correr como o utilizador do deployment (ex.: 'dev'), sem sudo,")
+        print("  para que 'uv'/'pm2' fiquem em ~/.local/bin do utilizador correto.")
+        print(f"  (SUDO_USER={os.environ.get('SUDO_USER')}, USER={os.environ.get('USER')})")
+        resp = ask("Continuar mesmo assim como root? (s/N)", "N")
+        if resp.strip().lower() not in ("s", "sim", "y", "yes"):
+            print("  Abortado. Volte a correr como utilizador normal (sem sudo).")
+            sys.exit(1)
 
     # Determine repo root (where this script lives)
     repo_dir = os.path.dirname(os.path.abspath(__file__))
