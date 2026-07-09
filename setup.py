@@ -464,8 +464,8 @@ def main():
         print("  ERRO: 'docker compose' nao disponivel.")
         sys.exit(1)
 
-    env_type = os.environ.get("AIRFLOW_ENV_TYPE") or "demo"
-    env_name = os.environ.get("AIRFLOW_ENV_NAME") or "test"
+    env_type = os.environ.get("AIRFLOW_ENV_TYPE") or "local"
+    env_name = os.environ.get("AIRFLOW_ENV_NAME") or "metrics"
     container = f"airflow-{env_type}-{env_name}"
 
     # Step 1: Docker build & up

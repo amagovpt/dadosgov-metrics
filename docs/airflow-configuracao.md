@@ -101,7 +101,7 @@ docker exec <container> python3 -c "from pymongo import MongoClient; print(Mongo
 
 Aceder a **Admin > Connections** no UI do Airflow (`http://localhost:18080/connection/list/`), ou usar o CLI.
 
-**Substituir `<container>` pelo nome real**, ex: `airflow-demo-test`.
+**Substituir `<container>` pelo nome real**, ex: `airflow-merics`.
 
 ### 4.1. Hydra PostgreSQL — Base de dados principal
 
