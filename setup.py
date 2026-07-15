@@ -2,7 +2,7 @@
 """
 Setup interativo do Data Engineering Stack (Airflow + Metrics ETL).
 
-Automatiza todos os passos descritos em docs/airflow-configuracao.md:
+Automatiza todos os passos descritos em config/airflow-configuracao.md:
   1. Build e arranque dos containers (docker compose)
   2. Importacao das Airflow Connections
   3. Importacao das Airflow Variables
@@ -222,7 +222,7 @@ def step_docker_build(repo_dir):
 def step_import_connections(repo_dir, topology, container):
     banner("2. Importacao das Airflow Connections")
 
-    connections_path = os.path.join(repo_dir, "docs", "connections.json")
+    connections_path = os.path.join(repo_dir, "config", "connections.json")
 
     with open(connections_path, "r", encoding="utf-8") as f:
         connections = json.load(f)
@@ -261,7 +261,7 @@ def step_import_connections(repo_dir, topology, container):
 
 def step_import_variables(repo_dir, topology, container):
     banner("3. Importacao das Airflow Variables")
-    variables_path = os.path.join(repo_dir, "docs", "variables.json")
+    variables_path = os.path.join(repo_dir, "config", "variables.json")
 
     with open(variables_path, "r", encoding="utf-8") as f:
         variables = json.load(f)
@@ -315,21 +315,20 @@ def step_create_tables(repo_dir, container):
         print(f"  ERRO: {r.stderr.strip()}")
 
 
-def step_setup_api_tabular():
-    banner("5. Arranque do stack completo via pm2 (setup_pm2.sh)")
+def step_setup_hydra(repo_dir):
+    banner("5. Arranque dos servicos Hydra via pm2")
 
-    api_dir = "/opt/api-tabular-pt"
-    if not os.path.isdir(api_dir):
-        print(f"  AVISO: Diretoria {api_dir} nao encontrada. A saltar setup do api-tabular-pt.")
-        return
-
-    # O setup_pm2.sh arranca tambem os servicos hydra a partir de /opt/hydra-pt
-    # (via cwd no ecosystem.config.js). Sem esse repo, o arranque seria parcial
-    # (apps hydra ficariam em 'errored'), por isso abortamos aqui.
+    # api-tabular e metrics-api correm agora em containers docker; aqui apenas
+    # arrancamos os servicos hydra (app + crawler + worker) via pm2, a partir de
+    # um ecosystem dedicado neste repo (scripts/hydra.ecosystem.config.js).
     hydra_dir = "/opt/hydra-pt"
     if not os.path.isdir(hydra_dir):
-        print(f"  ERRO: Diretoria {hydra_dir} nao encontrada.")
-        print("  O stack completo requer o repo hydra-pt. A abortar para evitar arranque parcial.")
+        print(f"  AVISO: Diretoria {hydra_dir} nao encontrada. A saltar arranque do hydra.")
+        return
+
+    ecosystem = os.path.join(repo_dir, "scripts", "hydra.ecosystem.config.js")
+    if not os.path.isfile(ecosystem):
+        print(f"  ERRO: ecosystem nao encontrado em {ecosystem}")
         return
 
     # Node.js + npm (necessarios para o pm2). So instala se ainda nao existirem.
@@ -354,7 +353,7 @@ def step_setup_api_tabular():
             return
         print("  pm2 instalado com sucesso.")
 
-    # 'uv' e necessario para os apps arrancarem (o ecosystem usa 'uv run ...').
+    # 'uv' e necessario para os apps hydra arrancarem (o ecosystem usa 'uv run ...').
     # Instalacao por-utilizador (sem sudo); so instala se ainda nao existir.
     def _uv_path():
         home_uv = os.path.expanduser("~/.local/bin/uv")
@@ -374,21 +373,14 @@ def step_setup_api_tabular():
             print(f"  AVISO: falha ao instalar uv: {(r.stderr or r.stdout).strip()}")
             print("         Instale manualmente: curl -LsSf https://astral.sh/uv/install.sh | sh")
 
-    # Arrancar TODO o stack (hydra-app/crawler/worker + api-tabular/metrics)
-    # + pm2-logrotate + servico systemd de boot, em vez de arrancar apenas a
-    # app de metricas inline. Delega no script reproduzivel do api-tabular-pt,
-    # garantindo que apos o setup das metricas todo o sistema fica a correr.
-    setup_script = os.path.join(api_dir, "scripts", "setup_pm2.sh")
-    if not os.path.isfile(setup_script):
-        print(f"  ERRO: Script nao encontrado em {setup_script}")
-        return
-
-    step(f"Arrancando todo o stack via {setup_script}...")
-    r = run(f"bash {setup_script}", check=False)
+    # startOrReload: arranca os que nao existem, recarrega os que ja estao a correr.
+    step(f"Arrancando/recarregando os servicos hydra via pm2 ({ecosystem})...")
+    r = run(f"pm2 startOrReload {ecosystem}", check=False)
     if r.returncode == 0:
-        print("  Stack completo arrancado com sucesso via pm2 (setup_pm2.sh).")
+        run("pm2 save", check=False)
+        print("  Servicos hydra arrancados com sucesso via pm2 (pm2 save efetuado).")
     else:
-        print("  ERRO ao arrancar o stack via setup_pm2.sh.")
+        print("  ERRO ao arrancar os servicos hydra via pm2.")
 
 
 def step_trigger_dag(container):
@@ -419,12 +411,12 @@ def step_trigger_dag(container):
 def main():
     banner("Setup do Data Engineering Stack")
     print("  Este script configura o ambiente Airflow completo.")
-    print("  Baseado em: docs/airflow-configuracao.md\n")
+    print("  Baseado em: config/airflow-configuracao.md\n")
 
     # Este setup deve correr como utilizador normal (ex.: 'dev'), nao como root.
-    # O uv/pm2 sao por-utilizador: como root iriam para /root/.local/bin e os apps
-    # (que esperam /home/dev/.local/bin/uv) nao os encontrariam. Os comandos que
-    # precisam de privilegios ja usam 'sudo' internamente.
+    # O uv/pm2 (usados no arranque do hydra) sao por-utilizador: como root iriam
+    # para /root/.local/bin e os apps (que esperam /home/dev/.local/bin/uv) nao os
+    # encontrariam. Os comandos que precisam de privilegios ja usam 'sudo' internamente.
     if hasattr(os, "geteuid") and os.geteuid() == 0:
         print("  AVISO: o setup.py esta a correr como ROOT.")
         print("  Recomendado: correr como o utilizador do deployment (ex.: 'dev'), sem sudo,")
@@ -483,8 +475,11 @@ def main():
     # Step 4: Create tables
     step_create_tables(repo_dir, container)
 
-    # Step 5: Setup api-tabular-pt com pm2
-    step_setup_api_tabular()
+    # Step 5: Arranque dos servicos hydra via pm2.
+    # Nota: metrics-api e tabular-api sao agora executados em containers docker,
+    # pelo que a sua inicializacao via pm2 foi removida; apenas o hydra
+    # (app + crawler + worker) e arrancado aqui.
+    step_setup_hydra(repo_dir)
 
     # Step 6: Trigger
     step_trigger_dag(container)
@@ -494,7 +489,7 @@ def main():
     print(f"  Airflow UI: http://localhost:{webserver_port}")
     print(f"  Container:  {container}")
     print(f"  DAG:        metrics_etl")
-    print(f"  Docs:       docs/airflow-configuracao.md\n")
+    print(f"  Docs:       config/airflow-configuracao.md\n")
 
 
 if __name__ == "__main__":

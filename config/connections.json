@@ -34,7 +34,7 @@
     "description": "MongoDB udata (sem autenticação)",
     "login": "",
     "password": null,
-    "host": "10.55.37.143",
+    "host": "10.55.37.40",
     "port": 27017,
     "schema": "",
     "extra": "{\"srv\": false, \"ssl\": false, \"allow_insecure\": false}"
@@ -44,7 +44,7 @@
     "description": "udata API",
     "login": "",
     "password": null,
-    "host": "172.31.204.12",
+    "host": "10.55.37.38",
     "schema": "",
     "extra": ""
   }
