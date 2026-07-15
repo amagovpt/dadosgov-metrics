@@ -22,7 +22,7 @@ services:
     env_file:
       - .env
     environment:
-      - AIRFLOW__LOGGING__LOG_RETENTION_DAYS=7
+      - AIRFLOW__LOGGING__LOG_RETENTION_DAYS=3
       - AIRFLOW__LOGGING__LOG_CLEANUP_ENABLED=True
     volumes:
       - ./dags:/opt/airflow/dags
