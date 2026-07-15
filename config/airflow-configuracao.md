@@ -103,20 +103,7 @@ Aceder a **Admin > Connections** no UI do Airflow (`http://localhost:18080/conne
 
 **Substituir `<container>` pelo nome real**, ex: `airflow-merics`.
 
-### 4.1. Hydra PostgreSQL — Base de dados principal
-
-```bash
-docker exec <container> airflow connections add "hydra_postgres" \
-  --conn-type postgres \
-  --conn-host "10.55.37.145" \
-  --conn-port 5432 \
-  --conn-login postgres \
-  --conn-password postgres \
-  --conn-schema postgres \
-  --conn-description "Hydra main PostgreSQL database"
-```
-
-### 4.2. Hydra PostgreSQL CSV — Base de dados usada pelo api-tabular-pt/PostgREST
+### 4.1. Hydra PostgreSQL CSV — Base de dados usada pelo api-tabular-pt/PostgREST
 
 ```bash
 docker exec <container> airflow connections add "hydra_postgres_csv" \
@@ -129,17 +116,7 @@ docker exec <container> airflow connections add "hydra_postgres_csv" \
   --conn-description "Hydra CSV PostgreSQL database (used by api-tabular-pt/PostgREST)"
 ```
 
-### 4.3. API Tabular (HTTP)
-
-```bash
-docker exec <container> airflow connections add "api_tabular_conn" \
-  --conn-type http \
-  --conn-host "10.55.37.145" \
-  --conn-port 8006 \
-  --conn-description "API Tabular (PostgREST)"
-```
-
-### 4.4. MongoDB (udata)
+### 4.2. MongoDB (udata)
 
 ```bash
 docker exec <container> airflow connections add "mongo_default" \
@@ -149,25 +126,12 @@ docker exec <container> airflow connections add "mongo_default" \
   --conn-description "MongoDB udata (sem autenticacao)"
 ```
 
-### 4.5. udata API (HTTP)
-
-```bash
-docker exec <container> airflow connections add "udata_http" \
-  --conn-type http \
-  --conn-host "172.31.204.12" \
-  --conn-port 7000 \
-  --conn-description "udata API"
-```
-
 ### Resumo de conexoes
 
 | Conn Id | Type | Host | Port | Schema | Usado por |
 |---------|------|------|------|--------|-----------|
-| `hydra_postgres` | postgres | `10.55.37.145` | `5432` | `postgres` | Acesso a BD principal |
 | `hydra_postgres_csv` | postgres | `10.55.37.145` | `5434` | `postgres` | DAG `metrics_etl` (escrita metricas no schema `metric`) |
-| `api_tabular_conn` | http | `10.55.37.145` | `8006` | — | Referencia a API Metrics |
 | `mongo_default` | mongo | `10.55.37.145` | `27017` | — | DAG `metrics_etl` (logs) |
-| `udata_http` | http | `172.31.204.12` | `7000` | — | Referencia (nao usado no DAG actual) |
 
 ### Verificar todas as conexoes
 

@@ -1,24 +1,4 @@
 {
-  "api_tabular_conn": {
-    "conn_type": "http",
-    "description": "API Tabular (PostgREST)",
-    "login": "",
-    "password": null,
-    "host": "host.docker.internal",
-    "port": 8006,
-    "schema": "",
-    "extra": ""
-  },
-  "hydra_postgres": {
-    "conn_type": "postgres",
-    "description": "Hydra main PostgreSQL database",
-    "login": "postgres",
-    "password": "postgres",
-    "host": "host.docker.internal",
-    "port": 5432,
-    "schema": "postgres",
-    "extra": ""
-  },
   "hydra_postgres_csv": {
     "conn_type": "postgres",
     "description": "Hydra CSV PostgreSQL database (used by api-tabular-pt/PostgREST)",
@@ -38,14 +18,5 @@
     "port": 27017,
     "schema": "",
     "extra": "{\"srv\": false, \"ssl\": false, \"allow_insecure\": false}"
-  },
-  "udata_http": {
-    "conn_type": "http",
-    "description": "udata API",
-    "login": "",
-    "password": null,
-    "host": "10.55.37.38",
-    "schema": "",
-    "extra": ""
   }
 }

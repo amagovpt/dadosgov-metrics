@@ -230,11 +230,6 @@ def step_import_connections(repo_dir, topology, container):
     # Update hosts based on topology
     connections["mongo_default"]["host"] = topology["mongo_host"]
     connections["mongo_default"]["port"] = topology["mongo_port"]
-    connections["udata_http"]["host"] = topology["udata_host"]
-    if topology["udata_port"]:
-        connections["udata_http"]["port"] = topology["udata_port"]
-    else:
-        connections["udata_http"].pop("port", None)
 
     # Ensure local connections use host.docker.internal
     # (127.0.0.1 inside the container does not reach host services)
@@ -248,7 +243,6 @@ def step_import_connections(repo_dir, topology, container):
 
     print(f"  connections.json atualizado:")
     print(f"    mongo_default.host = {topology['mongo_host']}")
-    print(f"    udata_http.host   = {topology['udata_host']}")
 
     run(f"docker cp {connections_path} {container}:/tmp/connections.json")
 
