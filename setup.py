@@ -309,76 +309,8 @@ def step_create_tables(repo_dir, container):
         print(f"  ERRO: {r.stderr.strip()}")
 
 
-def step_setup_hydra(repo_dir):
-    banner("5. Arranque dos servicos Hydra via pm2")
-
-    # api-tabular e metrics-api correm agora em containers docker; aqui apenas
-    # arrancamos os servicos hydra (app + crawler + worker) via pm2, a partir de
-    # um ecosystem dedicado neste repo (scripts/hydra.ecosystem.config.js).
-    hydra_dir = "/opt/hydra-pt"
-    if not os.path.isdir(hydra_dir):
-        print(f"  AVISO: Diretoria {hydra_dir} nao encontrada. A saltar arranque do hydra.")
-        return
-
-    ecosystem = os.path.join(repo_dir, "scripts", "hydra.ecosystem.config.js")
-    if not os.path.isfile(ecosystem):
-        print(f"  ERRO: ecosystem nao encontrado em {ecosystem}")
-        return
-
-    # Node.js + npm (necessarios para o pm2). So instala se ainda nao existirem.
-    if shutil.which("node") and shutil.which("npm"):
-        print(f"  Node.js/npm ja instalados ({shutil.which('node')}). A ignorar.")
-    else:
-        step("Instalando Node.js e npm...")
-        r = run("sudo dnf install -y nodejs npm", check=False, capture=True)
-        if r.returncode != 0 or not shutil.which("node"):
-            print(f"  ERRO ao instalar Node.js: {r.stderr.strip()}")
-            return
-        print(f"  Node.js instalado: {shutil.which('node')}")
-
-    # pm2 (global, via npm). So instala se ainda nao existir.
-    if shutil.which("pm2"):
-        print(f"  pm2 ja instalado ({shutil.which('pm2')}). A ignorar.")
-    else:
-        step("Instalando pm2...")
-        r = run("sudo npm install -g pm2", check=False, capture=True)
-        if r.returncode != 0:
-            print(f"  ERRO ao instalar pm2: {r.stderr.strip()}")
-            return
-        print("  pm2 instalado com sucesso.")
-
-    # 'uv' e necessario para os apps hydra arrancarem (o ecosystem usa 'uv run ...').
-    # Instalacao por-utilizador (sem sudo); so instala se ainda nao existir.
-    def _uv_path():
-        home_uv = os.path.expanduser("~/.local/bin/uv")
-        for candidate in (shutil.which("uv"), home_uv, "/home/dev/.local/bin/uv"):
-            if candidate and os.path.isfile(candidate):
-                return candidate
-        return None
-
-    if _uv_path():
-        print(f"  uv ja instalado ({_uv_path()}). A ignorar.")
-    else:
-        step("Instalando uv (instalador oficial, para o utilizador atual)...")
-        r = run("curl -LsSf https://astral.sh/uv/install.sh | sh", check=False, capture=True)
-        if _uv_path():
-            print(f"  uv instalado: {_uv_path()}")
-        else:
-            print(f"  AVISO: falha ao instalar uv: {(r.stderr or r.stdout).strip()}")
-            print("         Instale manualmente: curl -LsSf https://astral.sh/uv/install.sh | sh")
-
-    # startOrReload: arranca os que nao existem, recarrega os que ja estao a correr.
-    step(f"Arrancando/recarregando os servicos hydra via pm2 ({ecosystem})...")
-    r = run(f"pm2 startOrReload {ecosystem}", check=False)
-    if r.returncode == 0:
-        run("pm2 save", check=False)
-        print("  Servicos hydra arrancados com sucesso via pm2 (pm2 save efetuado).")
-    else:
-        print("  ERRO ao arrancar os servicos hydra via pm2.")
-
-
 def step_trigger_dag(container):
-    banner("6. Trigger do DAG metrics_etl")
+    banner("5. Trigger do DAG metrics_etl")
 
     trigger = ask("Deseja fazer trigger do DAG metrics_etl agora? (S/n)", "S")
     if trigger.lower() == "n":
@@ -407,14 +339,14 @@ def main():
     print("  Este script configura o ambiente Airflow completo.")
     print("  Baseado em: config/airflow-configuracao.md\n")
 
-    # Este setup deve correr como utilizador normal (ex.: 'dev'), nao como root.
-    # O uv/pm2 (usados no arranque do hydra) sao por-utilizador: como root iriam
-    # para /root/.local/bin e os apps (que esperam /home/dev/.local/bin/uv) nao os
-    # encontrariam. Os comandos que precisam de privilegios ja usam 'sudo' internamente.
+    # Este setup deve correr como utilizador normal (ex.: 'dev'), nao como root:
+    # como root, os ficheiros criados/geridos (docker, .env, config/*) ficariam com
+    # dono root e o docker usaria o contexto errado. Os comandos que precisam de
+    # privilegios ja usam 'sudo' internamente.
     if hasattr(os, "geteuid") and os.geteuid() == 0:
         print("  AVISO: o setup.py esta a correr como ROOT.")
         print("  Recomendado: correr como o utilizador do deployment (ex.: 'dev'), sem sudo,")
-        print("  para que 'uv'/'pm2' fiquem em ~/.local/bin do utilizador correto.")
+        print("  para evitar ficheiros com dono root e usar o contexto docker correto.")
         print(f"  (SUDO_USER={os.environ.get('SUDO_USER')}, USER={os.environ.get('USER')})")
         resp = ask("Continuar mesmo assim como root? (s/N)", "N")
         if resp.strip().lower() not in ("s", "sim", "y", "yes"):
@@ -469,13 +401,11 @@ def main():
     # Step 4: Create tables
     step_create_tables(repo_dir, container)
 
-    # Step 5: Arranque dos servicos hydra via pm2.
-    # Nota: metrics-api e tabular-api sao agora executados em containers docker,
-    # pelo que a sua inicializacao via pm2 foi removida; apenas o hydra
-    # (app + crawler + worker) e arrancado aqui.
-    step_setup_hydra(repo_dir)
+    # Nota: o Hydra (app + crawler + worker) e agora executado no seu proprio
+    # container Docker (/opt/hydra-pt/docker-compose.yml, servico 'hydra' gerido
+    # por supervisord). Deixou de ser arrancado por aqui via pm2.
 
-    # Step 6: Trigger
+    # Step 5: Trigger
     step_trigger_dag(container)
 
     webserver_port = os.environ.get("AIRFLOW_WEBSERVER_PORT", "8080")
