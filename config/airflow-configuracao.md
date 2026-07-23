@@ -99,6 +99,15 @@ docker exec <container> python3 -c "from pymongo import MongoClient; print(Mongo
 
 ## 4. Conexoes (Connections)
 
+> **NOTA (provisionamento automatico):** as connections `hydra_postgres_csv` e
+> `mongo_default` sao agora definidas por variaveis de ambiente `AIRFLOW_CONN_*`
+> no `.env` (carregado via `env_file` no `docker-compose.yml`) e ficam disponiveis
+> assim que o container arranca — o `setup.py` **ja nao** corre
+> `airflow connections import` (esse comando carregava a app inteira e era morto
+> por OOM / exit 137 em hosts apertados, ex.: PPR). Os hosts/portas vêm de
+> `HYDRA_*` e `MONGODB_*` no `.env` (estes ultimos atualizados pela topologia no
+> `setup.py`). Os comandos abaixo servem apenas para gestao/debug manual.
+
 Aceder a **Admin > Connections** no UI do Airflow (`http://localhost:18080/connection/list/`), ou usar o CLI.
 
 **Substituir `<container>` pelo nome real**, ex: `airflow-merics`.

@@ -1,7 +1,17 @@
 version: "3"
+
+# Limite de tamanho dos logs de stdout/stderr dos containers (driver json-file).
+# Evita que /var/lib/docker/containers/*/*-json.log cresça sem limite.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "50m"
+    max-file: "5"
+
 services:
   postgres:
     image: postgres:12
+    logging: *default-logging
     user: "${AIRFLOW_UID}:${AIRFLOW_GID}"
     volumes:
       - ./pg-airflow:/var/lib/postgresql/data
@@ -14,6 +24,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    logging: *default-logging
     hostname: webserver
     restart: on-failure
     depends_on:
@@ -21,9 +32,10 @@ services:
     command: webserver
     env_file:
       - .env
-    environment:
-      - AIRFLOW__LOGGING__LOG_RETENTION_DAYS=3
-      - AIRFLOW__LOGGING__LOG_CLEANUP_ENABLED=True
+    # NOTA: AIRFLOW__LOGGING__LOG_RETENTION_DAYS / LOG_CLEANUP_ENABLED NÃO são
+    # chaves nativas do Airflow (não fazem nada). A retenção real dos logs é feita
+    # no host pelo script /opt/dadosgov-metrics/prune-logs.sh, agendado pelo
+    # systemd timer 'dadosgov-metrics-logclean.timer' (diário, retém 3 dias).
     volumes:
       - ./dags:/opt/airflow/dags
       - ./scripts:/opt/airflow/scripts

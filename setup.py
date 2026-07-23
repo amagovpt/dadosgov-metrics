@@ -4,7 +4,7 @@ Setup interativo do Data Engineering Stack (Airflow + Metrics ETL).
 
 Automatiza todos os passos descritos em config/airflow-configuracao.md:
   1. Build e arranque dos containers (docker compose)
-  2. Importacao das Airflow Connections
+  2. Airflow Connections (via AIRFLOW_CONN_* no .env, sem import)
   3. Importacao das Airflow Variables
   4. Criacao das tabelas no Hydra (PostgreSQL)
   5. Trigger do DAG metrics_etl
@@ -63,6 +63,29 @@ def run(cmd, check=True, capture=False, **kwargs):
         cmd, shell=isinstance(cmd, str), check=check,
         capture_output=capture, text=True, **kwargs,
     )
+
+
+def run_retry(cmd, tries=3, wait=8, **kwargs):
+    """Run a command, repetindo apenas quando o processo e morto por OOM.
+
+    Cada invocacao do CLI do Airflow carrega a app inteira e pode ser
+    morta pelo OOM killer em hosts com pouca memoria (ex.: PPR), saindo
+    com codigo 137 (128 + SIGKILL). Nesses casos aguarda-se para a
+    memoria assentar e tenta-se de novo. Qualquer outra falha e levantada
+    como CalledProcessError, tal como faria run(check=True).
+    """
+    r = None
+    for attempt in range(1, tries + 1):
+        r = run(cmd, check=False, **kwargs)
+        if r.returncode == 0:
+            return r
+        if r.returncode == 137 and attempt < tries:
+            print(f"    Processo morto por falta de memoria (137). "
+                  f"Tentativa {attempt}/{tries}; a aguardar {wait}s...")
+            time.sleep(wait)
+            continue
+        r.check_returncode()
+    return r
 
 
 def ask(prompt, default=""):
@@ -148,6 +171,13 @@ def ask_topology():
         mongo_ip = ask_ip("MongoDB (udata)", "10.55.37.40")
         config["mongo_host"] = mongo_ip
 
+    # 127.0.0.1 dentro do container nao alcanca servicos do host: usar
+    # host.docker.internal (esta correcao era antes feita no import das
+    # connections; agora que a connection vem de AIRFLOW_CONN_MONGO_DEFAULT
+    # tem de ser garantida aqui, antes de persistir MONGODB_HOST no .env).
+    if config["mongo_host"] == "127.0.0.1":
+        config["mongo_host"] = "host.docker.internal"
+
     # Persistir valores escolhidos no .env
     update_env_values({
         "UDATA_HOST": config["udata_host"],
@@ -219,38 +249,22 @@ def step_docker_build(repo_dir):
     run(f"docker compose ps", cwd=repo_dir)
 
 
-def step_import_connections(repo_dir, topology, container):
-    banner("2. Importacao das Airflow Connections")
+def step_show_connections(topology):
+    banner("2. Airflow Connections (via variaveis de ambiente)")
 
-    connections_path = os.path.join(repo_dir, "config", "connections.json")
-
-    with open(connections_path, "r", encoding="utf-8") as f:
-        connections = json.load(f)
-
-    # Update hosts based on topology
-    connections["mongo_default"]["host"] = topology["mongo_host"]
-    connections["mongo_default"]["port"] = topology["mongo_port"]
-
-    # Ensure local connections use host.docker.internal
-    # (127.0.0.1 inside the container does not reach host services)
-    for conn_id, conn in connections.items():
-        if conn.get("host") == "127.0.0.1":
-            connections[conn_id]["host"] = "host.docker.internal"
-            print(f"  {conn_id}: host corrigido para host.docker.internal")
-
-    with open(connections_path, "w", encoding="utf-8") as f:
-        json.dump(connections, f, indent=2, ensure_ascii=False)
-
-    print(f"  connections.json atualizado:")
-    print(f"    mongo_default.host = {topology['mongo_host']}")
-
-    run(f"docker cp {connections_path} {container}:/tmp/connections.json")
-
-    # Delete existing connections to allow re-import with updated values
-    for conn_id in connections:
-        docker_exec(container, f"airflow connections delete {conn_id}")
-
-    run(f"docker exec {container} airflow connections import /tmp/connections.json")
+    # As connections deixaram de ser importadas pelo CLI do Airflow
+    # ('airflow connections import' carregava a app inteira e era morto por
+    # OOM em hosts apertados, ex.: PPR -> exit 137). Passam a ser
+    # provisionadas ao arranque a partir das AIRFLOW_CONN_* no .env
+    # (carregado via env_file no docker-compose). Nao ha nada a importar.
+    print("  Provisionadas automaticamente pelo Airflow a partir do .env")
+    print("  (AIRFLOW_CONN_*, carregado via env_file). Nada a importar.\n")
+    print(f"    hydra_postgres_csv -> AIRFLOW_CONN_HYDRA_POSTGRES_CSV "
+          f"(host.docker.internal:{os.environ.get('HYDRA_PORT', '5434')})")
+    print(f"    mongo_default      -> AIRFLOW_CONN_MONGO_DEFAULT "
+          f"({topology['mongo_host']}:{topology['mongo_port']})")
+    print("\n  A connection e verificada na pratica no passo 4 (create_tables),")
+    print("  que usa PostgresHook('hydra_postgres_csv') dentro do container.")
 
 
 def step_import_variables(repo_dir, topology, container):
@@ -274,7 +288,7 @@ def step_import_variables(repo_dir, topology, container):
     print(f"    UDATA_INSTANCE_URL = {variables['UDATA_INSTANCE_URL']}")
 
     run(f"docker cp {variables_path} {container}:/tmp/variables.json")
-    run(f"docker exec {container} airflow variables import /tmp/variables.json")
+    run_retry(f"docker exec {container} airflow variables import /tmp/variables.json")
 
 
 def step_create_tables(repo_dir, container):
@@ -392,8 +406,8 @@ def main():
     # Wait for Airflow
     wait_for_airflow(container, timeout=120)
 
-    # Step 2: Import connections
-    step_import_connections(repo_dir, topology, container)
+    # Step 2: Connections (provisionadas via AIRFLOW_CONN_* no .env)
+    step_show_connections(topology)
 
     # Step 3: Import variables
     step_import_variables(repo_dir, topology, container)
