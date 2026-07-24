@@ -201,14 +201,14 @@ docker exec hydra-pt-database-csv-1 psql -U postgres -c "\dt metric.*; \dm metri
 > outros via `git pull`. O `Variable.get()` resolve a env var **antes** da
 > metadata DB, pelo que valores importados no passado ficam ignorados.
 >
-> - `AIRFLOW_VAR_UDATA_INSTANCE_URL` — escrito no `.env` pelo `setup.py` a
->   partir das respostas de topologia;
 > - `AIRFLOW_VAR_METRICS_API_URL` — unica variable lida pelo DAG
 >   (`Variable.get` em `dags/metrics_etl.py`); se omitida, o DAG usa o default
 >   `http://host.docker.internal:8006/api`.
 >
-> As antigas `AIRFLOW_DAG_HOME` e `MONGODB_CONN_ID` nao eram lidas por nenhum
-> codigo e deixaram de ser provisionadas (o conn_id do mongo esta fixo no DAG).
+> As antigas `AIRFLOW_DAG_HOME`, `MONGODB_CONN_ID` e `UDATA_INSTANCE_URL` nao
+> eram lidas por nenhum codigo e deixaram de ser provisionadas (o conn_id do
+> mongo esta fixo no DAG; os dados do udata vêm do Mongo via `mongo_default`,
+> nao de um URL de API).
 
 Para gestao/debug manual (os comandos abaixo escrevem na metadata DB, que so e
 consultada se a env var correspondente nao existir):

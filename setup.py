@@ -154,18 +154,12 @@ def ask_topology():
     if config["mongo_host"] == "127.0.0.1":
         config["mongo_host"] = "host.docker.internal"
 
-    if config["udata_port"]:
-        config["udata_url"] = f"http://{config['udata_host']}:{config['udata_port']}"
-    else:
-        config["udata_url"] = f"http://{config['udata_host']}"
-
     # Persistir valores escolhidos no .env
     update_env_values({
         "UDATA_HOST": config["udata_host"],
         "UDATA_PORT": str(config["udata_port"]) if config["udata_port"] else "",
         "MONGODB_HOST": config["mongo_host"],
         "MONGODB_PORT": str(config["mongo_port"]),
-        "AIRFLOW_VAR_UDATA_INSTANCE_URL": config["udata_url"],
     })
 
     banner("Configuracao de Rede")
@@ -249,7 +243,7 @@ def step_show_connections(topology):
     print("  que usa PostgresHook('hydra_postgres_csv') dentro do container.")
 
 
-def step_show_variables(topology):
+def step_show_variables():
     banner("3. Airflow Variables (via variaveis de ambiente)")
 
     # As variables deixaram de ser importadas pelo CLI do Airflow: o
@@ -258,14 +252,14 @@ def step_show_variables(topology):
     # versionado com valores do ambiente, que depois viajavam entre ambientes
     # via git pull. Passam a ser provisionadas a partir das AIRFLOW_VAR_* no
     # .env; o Variable.get() resolve a env var antes da metadata DB, pelo que
-    # valores importados no passado ficam ignorados.
+    # valores importados no passado ficam ignorados. METRICS_API_URL e a unica
+    # variable lida por codigo (Variable.get em dags/metrics_etl.py).
     metrics_api = os.environ.get(
         "AIRFLOW_VAR_METRICS_API_URL",
         "http://host.docker.internal:8006/api [default do DAG]")
     print("  Provisionadas automaticamente pelo Airflow a partir do .env")
     print("  (AIRFLOW_VAR_*, carregado via env_file). Nada a importar.\n")
-    print(f"    UDATA_INSTANCE_URL -> AIRFLOW_VAR_UDATA_INSTANCE_URL ({topology['udata_url']})")
-    print(f"    METRICS_API_URL    -> AIRFLOW_VAR_METRICS_API_URL ({metrics_api})")
+    print(f"    METRICS_API_URL -> AIRFLOW_VAR_METRICS_API_URL ({metrics_api})")
 
 
 def step_create_tables(repo_dir, container):
@@ -387,7 +381,7 @@ def main():
     step_show_connections(topology)
 
     # Step 3: Variables (provisionadas via AIRFLOW_VAR_* no .env)
-    step_show_variables(topology)
+    step_show_variables()
 
     # Step 4: Create tables
     step_create_tables(repo_dir, container)
