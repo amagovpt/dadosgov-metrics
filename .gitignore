@@ -5,6 +5,8 @@ pg-airflow/
 ssh/
 .env
 variables.py
+config/variables.json
+__pycache__/
 .DS_Store
 mise.local.toml
 .vscode/

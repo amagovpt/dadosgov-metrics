@@ -192,13 +192,30 @@ docker exec hydra-pt-database-csv-1 psql -U postgres -c "\dt metric.*; \dm metri
 
 ## 6. Variaveis (Variables)
 
-```bash
-docker exec <container> airflow variables set UDATA_INSTANCE_URL "http://172.31.204.12:7000"
-docker exec <container> airflow variables set METRICS_API_URL "http://10.55.37.145:8006/api"
-docker exec <container> airflow variables set MONGODB_CONN_ID "mongo_default"
-```
+> **NOTA (provisionamento automatico):** as variables sao agora definidas por
+> variaveis de ambiente `AIRFLOW_VAR_<NOME>` no `.env` (carregado via `env_file`
+> no `docker-compose.yml`) — o `setup.py` **ja nao** corre
+> `airflow variables import` (mesmo problema de OOM do antigo import das
+> connections) nem reescreve o `config/variables.json`, que foi removido do
+> repositorio: era versionado e os valores de um ambiente "viajavam" para os
+> outros via `git pull`. O `Variable.get()` resolve a env var **antes** da
+> metadata DB, pelo que valores importados no passado ficam ignorados.
+>
+> - `AIRFLOW_VAR_UDATA_INSTANCE_URL` — escrito no `.env` pelo `setup.py` a
+>   partir das respostas de topologia;
+> - `AIRFLOW_VAR_METRICS_API_URL` — unica variable lida pelo DAG
+>   (`Variable.get` em `dags/metrics_etl.py`); se omitida, o DAG usa o default
+>   `http://host.docker.internal:8006/api`.
+>
+> As antigas `AIRFLOW_DAG_HOME` e `MONGODB_CONN_ID` nao eram lidas por nenhum
+> codigo e deixaram de ser provisionadas (o conn_id do mongo esta fixo no DAG).
 
-**Nota:** O DAG `metrics_etl` actual usa constantes no codigo em vez de Variables, para simplicidade.
+Para gestao/debug manual (os comandos abaixo escrevem na metadata DB, que so e
+consultada se a env var correspondente nao existir):
+
+```bash
+docker exec <container> airflow variables set METRICS_API_URL "http://10.55.37.145:8006/api"
+```
 
 ## 7. DAG metrics_etl — Pipeline de metricas
 

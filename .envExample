@@ -36,13 +36,8 @@ UDATA_PORT=7000
 MONGODB_HOST=host.docker.internal
 MONGODB_PORT=27017
 
-# Airflow Connections provisionadas por ambiente (substituem o antigo
-# 'airflow connections import' do setup.py, que carregava a app inteira e
-# era morto por OOM em hosts apertados). O Airflow le AIRFLOW_CONN_<ID>
-# ao arranque; o <ID> em minusculas e o conn_id usado nos DAGs.
-#   hydra_postgres_csv -> PostgresHook nos DAGs (schema = base de dados)
-#   mongo_default       -> MongoHook nos DAGs
-# Nota: os extras do mongo (srv/ssl/allow_insecure) sao todos os defaults do
-# provider, por isso a URI simples e equivalente a connection antiga.
 AIRFLOW_CONN_HYDRA_POSTGRES_CSV=postgres://$HYDRA_USER:$HYDRA_PASSWORD@$HYDRA_HOST:$HYDRA_PORT/$HYDRA_DB
 AIRFLOW_CONN_MONGO_DEFAULT=mongo://$MONGODB_HOST:$MONGODB_PORT
+
+AIRFLOW_VAR_UDATA_INSTANCE_URL=http://$UDATA_HOST:$UDATA_PORT
+AIRFLOW_VAR_METRICS_API_URL=http://host.docker.internal:8006/api

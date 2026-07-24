@@ -5,7 +5,7 @@ Setup interativo do Data Engineering Stack (Airflow + Metrics ETL).
 Automatiza todos os passos descritos em config/airflow-configuracao.md:
   1. Build e arranque dos containers (docker compose)
   2. Airflow Connections (via AIRFLOW_CONN_* no .env, sem import)
-  3. Importacao das Airflow Variables
+  3. Airflow Variables (via AIRFLOW_VAR_* no .env, sem import)
   4. Criacao das tabelas no Hydra (PostgreSQL)
   5. Trigger do DAG metrics_etl
 
@@ -13,7 +13,6 @@ Uso (executar na raiz do repositorio):
   python3 setup.py
 """
 
-import json
 import os
 import re
 import shutil
@@ -63,29 +62,6 @@ def run(cmd, check=True, capture=False, **kwargs):
         cmd, shell=isinstance(cmd, str), check=check,
         capture_output=capture, text=True, **kwargs,
     )
-
-
-def run_retry(cmd, tries=3, wait=8, **kwargs):
-    """Run a command, repetindo apenas quando o processo e morto por OOM.
-
-    Cada invocacao do CLI do Airflow carrega a app inteira e pode ser
-    morta pelo OOM killer em hosts com pouca memoria (ex.: PPR), saindo
-    com codigo 137 (128 + SIGKILL). Nesses casos aguarda-se para a
-    memoria assentar e tenta-se de novo. Qualquer outra falha e levantada
-    como CalledProcessError, tal como faria run(check=True).
-    """
-    r = None
-    for attempt in range(1, tries + 1):
-        r = run(cmd, check=False, **kwargs)
-        if r.returncode == 0:
-            return r
-        if r.returncode == 137 and attempt < tries:
-            print(f"    Processo morto por falta de memoria (137). "
-                  f"Tentativa {attempt}/{tries}; a aguardar {wait}s...")
-            time.sleep(wait)
-            continue
-        r.check_returncode()
-    return r
 
 
 def ask(prompt, default=""):
@@ -178,12 +154,18 @@ def ask_topology():
     if config["mongo_host"] == "127.0.0.1":
         config["mongo_host"] = "host.docker.internal"
 
+    if config["udata_port"]:
+        config["udata_url"] = f"http://{config['udata_host']}:{config['udata_port']}"
+    else:
+        config["udata_url"] = f"http://{config['udata_host']}"
+
     # Persistir valores escolhidos no .env
     update_env_values({
         "UDATA_HOST": config["udata_host"],
         "UDATA_PORT": str(config["udata_port"]) if config["udata_port"] else "",
         "MONGODB_HOST": config["mongo_host"],
         "MONGODB_PORT": str(config["mongo_port"]),
+        "AIRFLOW_VAR_UDATA_INSTANCE_URL": config["udata_url"],
     })
 
     banner("Configuracao de Rede")
@@ -267,28 +249,23 @@ def step_show_connections(topology):
     print("  que usa PostgresHook('hydra_postgres_csv') dentro do container.")
 
 
-def step_import_variables(repo_dir, topology, container):
-    banner("3. Importacao das Airflow Variables")
-    variables_path = os.path.join(repo_dir, "config", "variables.json")
+def step_show_variables(topology):
+    banner("3. Airflow Variables (via variaveis de ambiente)")
 
-    with open(variables_path, "r", encoding="utf-8") as f:
-        variables = json.load(f)
-
-    # Update variables based on topology
-    if topology["udata_port"]:
-        variables["UDATA_INSTANCE_URL"] = f"http://{topology['udata_host']}:{topology['udata_port']}"
-    else:
-        variables["UDATA_INSTANCE_URL"] = f"http://{topology['udata_host']}"
-    variables.setdefault("METRICS_API_URL", "http://host.docker.internal:8006/api")
-
-    with open(variables_path, "w", encoding="utf-8") as f:
-        json.dump(variables, f, indent=4, ensure_ascii=False)
-
-    print(f"  variables.json atualizado:")
-    print(f"    UDATA_INSTANCE_URL = {variables['UDATA_INSTANCE_URL']}")
-
-    run(f"docker cp {variables_path} {container}:/tmp/variables.json")
-    run_retry(f"docker exec {container} airflow variables import /tmp/variables.json")
+    # As variables deixaram de ser importadas pelo CLI do Airflow: o
+    # 'airflow variables import' carregava a app inteira (mesmo OOM do antigo
+    # import das connections) e este passo reescrevia o config/variables.json
+    # versionado com valores do ambiente, que depois viajavam entre ambientes
+    # via git pull. Passam a ser provisionadas a partir das AIRFLOW_VAR_* no
+    # .env; o Variable.get() resolve a env var antes da metadata DB, pelo que
+    # valores importados no passado ficam ignorados.
+    metrics_api = os.environ.get(
+        "AIRFLOW_VAR_METRICS_API_URL",
+        "http://host.docker.internal:8006/api [default do DAG]")
+    print("  Provisionadas automaticamente pelo Airflow a partir do .env")
+    print("  (AIRFLOW_VAR_*, carregado via env_file). Nada a importar.\n")
+    print(f"    UDATA_INSTANCE_URL -> AIRFLOW_VAR_UDATA_INSTANCE_URL ({topology['udata_url']})")
+    print(f"    METRICS_API_URL    -> AIRFLOW_VAR_METRICS_API_URL ({metrics_api})")
 
 
 def step_create_tables(repo_dir, container):
@@ -409,8 +386,8 @@ def main():
     # Step 2: Connections (provisionadas via AIRFLOW_CONN_* no .env)
     step_show_connections(topology)
 
-    # Step 3: Import variables
-    step_import_variables(repo_dir, topology, container)
+    # Step 3: Variables (provisionadas via AIRFLOW_VAR_* no .env)
+    step_show_variables(topology)
 
     # Step 4: Create tables
     step_create_tables(repo_dir, container)
