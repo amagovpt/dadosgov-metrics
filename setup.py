@@ -295,21 +295,70 @@ def step_create_tables(repo_dir, container):
         print(f"  ERRO: {r.stderr.strip()}")
 
 
+def wait_for_dag(container, dag_id, timeout=300):
+    """Wait until the dag processor has registered dag_id in the metadata DB.
+
+    O 'wait_for_airflow' so garante que o CLI responde, nao que as DAGs ja
+    foram lidas: o dag processor varre a pasta a cada
+    'dag_dir_list_interval' (300s no airflow.cfg). Num ambiente novo o
+    'unpause' pode correr antes de a DAG existir.
+    """
+    step(f"Aguardando o Airflow registar o DAG {dag_id} (max {timeout}s)...")
+    start = time.time()
+    while time.time() - start < timeout:
+        r = docker_exec(container, "airflow dags list -o plain")
+        if r.returncode == 0 and dag_id in r.stdout:
+            print(f"  {dag_id} registado.")
+            return True
+        time.sleep(10)
+        remaining = max(0, int(timeout - (time.time() - start)))
+        print(f"  Aguardando... ({remaining}s restantes)")
+    return False
+
+
+def dag_is_paused(container, dag_id):
+    """Return True/False for the DAG's paused state, or None if unknown."""
+    r = docker_exec(container, f"airflow dags details {dag_id} -o plain")
+    if r.returncode != 0:
+        return None
+    for line in r.stdout.splitlines():
+        if line.strip().startswith("is_paused"):
+            return "True" in line.split(None, 1)[-1]
+    return None
+
+
 def step_unpause_maintenance_dags(container):
     banner("5. Ativar DAGs de manutencao")
+
+    dag_id = "logs_cleanup"
 
     # Incondicional: a limpeza de logs nao deve depender de uma escolha do
     # operador. Sem isto a DAG fica em pausa (dags_are_paused_at_creation=True)
     # e os logs crescem sem limite. O 'is_paused_upon_creation=False' no ficheiro
     # da DAG cobre o caso de o setup nao correr; isto cobre o caso de a DAG ja
     # existir na metadata DB (onde esse flag so vale a criacao).
-    step("Unpause do DAG logs_cleanup...")
-    r = docker_exec(container, "airflow dags unpause logs_cleanup")
-    if r.returncode == 0:
-        print("  logs_cleanup ativo (diario, 03:00).")
+    if not wait_for_dag(container, dag_id):
+        print(f"  AVISO: {dag_id} nao apareceu a tempo. O ficheiro tem")
+        print("  is_paused_upon_creation=False, por isso deve ficar ativo assim que")
+        print("  for lido. Confirme com:")
+        print(f"    docker exec {container} airflow dags list")
+        return
+
+    step(f"Unpause do DAG {dag_id}...")
+    # NOTA: 'airflow dags unpause' devolve 0 mesmo quando nao encontra a DAG
+    # ("No paused DAGs were found"), por isso o returncode nao serve de
+    # confirmacao — verifica-se o estado real a seguir.
+    docker_exec(container, f"airflow dags unpause {dag_id}")
+
+    paused = dag_is_paused(container, dag_id)
+    if paused is False:
+        print(f"  {dag_id} ativo (diario, 03:00).")
+    elif paused is True:
+        print(f"  AVISO: {dag_id} continua em pausa. Ative-o na UI ou com:")
+        print(f"    docker exec {container} airflow dags unpause {dag_id}")
     else:
-        print(f"  AVISO: nao foi possivel ativar logs_cleanup: {r.stderr.strip()}")
-        print("  Verifique com: docker exec {} airflow dags list".format(container))
+        print(f"  AVISO: nao foi possivel confirmar o estado de {dag_id}.")
+        print(f"    docker exec {container} airflow dags details {dag_id}")
 
 
 def step_trigger_dag(container):
