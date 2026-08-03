@@ -7,7 +7,8 @@ Automatiza todos os passos descritos em config/airflow-configuracao.md:
   2. Airflow Connections (via AIRFLOW_CONN_* no .env, sem import)
   3. Airflow Variables (via AIRFLOW_VAR_* no .env, sem import)
   4. Criacao das tabelas no Hydra (PostgreSQL)
-  5. Trigger do DAG metrics_etl
+  5. Ativacao das DAGs de manutencao (logs_cleanup)
+  6. Trigger do DAG metrics_etl
 
 Uso (executar na raiz do repositorio):
   python3 setup.py
@@ -294,8 +295,25 @@ def step_create_tables(repo_dir, container):
         print(f"  ERRO: {r.stderr.strip()}")
 
 
+def step_unpause_maintenance_dags(container):
+    banner("5. Ativar DAGs de manutencao")
+
+    # Incondicional: a limpeza de logs nao deve depender de uma escolha do
+    # operador. Sem isto a DAG fica em pausa (dags_are_paused_at_creation=True)
+    # e os logs crescem sem limite. O 'is_paused_upon_creation=False' no ficheiro
+    # da DAG cobre o caso de o setup nao correr; isto cobre o caso de a DAG ja
+    # existir na metadata DB (onde esse flag so vale a criacao).
+    step("Unpause do DAG logs_cleanup...")
+    r = docker_exec(container, "airflow dags unpause logs_cleanup")
+    if r.returncode == 0:
+        print("  logs_cleanup ativo (diario, 03:00).")
+    else:
+        print(f"  AVISO: nao foi possivel ativar logs_cleanup: {r.stderr.strip()}")
+        print("  Verifique com: docker exec {} airflow dags list".format(container))
+
+
 def step_trigger_dag(container):
-    banner("5. Trigger do DAG metrics_etl")
+    banner("6. Trigger do DAG metrics_etl")
 
     trigger = ask("Deseja fazer trigger do DAG metrics_etl agora? (S/n)", "S")
     if trigger.lower() == "n":
@@ -390,14 +408,17 @@ def main():
     # container Docker (/opt/hydra-pt/docker-compose.yml, servico 'hydra' gerido
     # por supervisord). Deixou de ser arrancado por aqui via pm2.
 
-    # Step 5: Trigger
+    # Step 5: DAGs de manutencao (sempre ativas)
+    step_unpause_maintenance_dags(container)
+
+    # Step 6: Trigger
     step_trigger_dag(container)
 
     webserver_port = os.environ.get("AIRFLOW_WEBSERVER_PORT", "8080")
     banner("Setup concluido!")
     print(f"  Airflow UI: http://localhost:{webserver_port}")
     print(f"  Container:  {container}")
-    print(f"  DAG:        metrics_etl")
+    print(f"  DAGs:       metrics_etl, logs_cleanup (limpeza diaria dos logs)")
     print(f"  Docs:       config/airflow-configuracao.md\n")
 
 
