@@ -48,9 +48,17 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     entrypoint: ./scripts/airflow-entrypoint.sh
+    # Testa webserver E scheduler. O scheduler corre como processo em background
+    # dentro deste mesmo container (ver scripts/airflow-entrypoint.sh); quando o
+    # healthcheck só olhava para o PID do webserver, um scheduler morto deixava o
+    # container a reportar 'healthy' com a UI a responder e nada a ser agendado.
     healthcheck:
-      test: ["CMD-SHELL", "[ -f /opt/airflow/airflow-webserver.pid ]"]
-      interval: 30s
+      test: ["CMD-SHELL", "[ -f /opt/airflow/airflow-webserver.pid ] && airflow jobs check --job-type SchedulerJob --hostname \"$$(hostname)\""]
+      interval: 60s
       timeout: 30s
-      retries: 32
+      retries: 5
+      # 'airflow jobs check' custa ~3s (carrega a config do Airflow), daí o
+      # interval de 60s em vez de 30s. O start_period substitui o antigo
+      # retries: 32, que servia só para tolerar a lentidão do arranque.
+      start_period: 300s
     container_name: "airflow-${AIRFLOW_ENV_TYPE}-${AIRFLOW_ENV_NAME}"

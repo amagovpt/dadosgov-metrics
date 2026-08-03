@@ -69,4 +69,16 @@ Para correr a limpeza manualmente:
 ```
 docker exec airflow-<env>-<name> airflow dags trigger logs_cleanup
 ```
+
+## Supervisão do scheduler
+
+Com LocalExecutor, o scheduler e o webserver correm no mesmo container. O
+`scripts/airflow-entrypoint.sh` lança ambos em background e usa `wait -n`: se
+qualquer um terminar, o entrypoint sai com código != 0 e o `restart: on-failure`
+do compose repõe o container com os dois processos.
+
+O healthcheck testa as duas coisas — o PID do webserver **e** `airflow jobs check
+--job-type SchedulerJob`. Antes olhava apenas para o webserver, pelo que um
+scheduler morto deixava o container `healthy`, com a UI a responder e nada a ser
+agendado (nem o ETL, nem a limpeza de logs).
 # dadosgov-metrics
