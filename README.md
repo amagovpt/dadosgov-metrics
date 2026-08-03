@@ -50,9 +50,22 @@ que invoca `scripts/prune-logs.sh` dentro do container:
 
 | | |
 |---|---|
-| Retenção | `RETENTION_DAYS=3` (efetiva ~4 dias, ver nota abaixo) |
+| Critério 1 — idade | `RETENTION_DAYS=3` (efetiva ~4 dias, ver nota abaixo) |
+| Critério 2 — tamanho | `MAX_MB=250` (= 50 MB × 5, igual ao cap json-file) |
+| Proteção | ficheiros com menos de `MIN_AGE_MIN=60` minutos nunca são removidos pelo tamanho |
 | Diretório | `/opt/airflow/logs` (via `AIRFLOW_LOG_DIR`) |
 | Agendamento | `schedule="0 3 * * *"` |
+
+Os dois critérios aplicam-se por esta ordem: primeiro remove-se por idade; se a
+árvore continuar acima do tecto, removem-se os ficheiros mais antigos até ficar
+abaixo. O tecto existe para o caso de um pico de atividade encher o disco dentro
+da janela de retenção, antes de a idade chegar para limpar.
+
+A proteção dos 60 minutos evita apagar ficheiros que possam estar a ser escritos
+por tarefas em execução. Se, por causa dela, o tecto não for atingido, o script
+avisa em vez de forçar — é o que acontece quando um único ficheiro recente é
+maior que o tecto (p. ex. `dag_processor_manager.log`, que o Airflow escreve
+continuamente).
 
 A DAG tem `is_paused_upon_creation=False` para não nascer em pausa
 (`airflow.cfg` tem `dags_are_paused_at_creation = True`), e o `setup.py` faz

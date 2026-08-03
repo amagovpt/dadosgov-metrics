@@ -17,6 +17,11 @@ PRUNE_SCRIPT = "/opt/airflow/scripts/prune-logs.sh"
 LOG_DIR = "/opt/airflow/logs"
 RETENTION_DAYS = 3
 
+# Tecto de espaço da árvore de logs, aplicado depois do critério de idade.
+# 250 MB = 50 MB x 5, o mesmo limite dos caps json-file dos composes, para que
+# todos os fluxos de log dos containers tenham o mesmo tecto.
+MAX_MB = 250
+
 with DAG(
     dag_id="logs_cleanup",
     start_date=datetime(2026, 1, 1),
@@ -41,6 +46,7 @@ with DAG(
         env={
             "AIRFLOW_LOG_DIR": LOG_DIR,
             "AIRFLOW_LOG_RETENTION_DAYS": str(RETENTION_DAYS),
+            "AIRFLOW_LOG_MAX_MB": str(MAX_MB),
         },
         append_env=True,
     )
