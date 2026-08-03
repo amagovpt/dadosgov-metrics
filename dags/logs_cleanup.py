@@ -5,8 +5,8 @@ cobertos por nenhum mecanismo nativo: o cap 'max-size/max-file' do compose aplic
 apenas aos logs de stdout no driver json-file. A remoção é feita por
 scripts/prune-logs.sh, montado no container em /opt/airflow/scripts.
 
-Esta DAG substitui o systemd timer 'dadosgov-metrics-logclean.timer' que fazia o
-agendamento no host, fora do repositório.
+Esta DAG substituiu o systemd timer 'dadosgov-metrics-logclean.timer', que fazia o
+agendamento no host, fora do repositório (removido a 2026-08-03).
 """
 
 from airflow import DAG
