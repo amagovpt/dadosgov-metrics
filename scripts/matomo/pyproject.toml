@@ -1,0 +1,24 @@
+[project]
+name = "import-matomo-metrics"
+version = "0.2.0"
+description = "Extraccao de metricas do Matomo (API HTTP ou MariaDB) para PostgreSQL/MongoDB"
+requires-python = ">=3.9"
+dependencies = [
+    "psycopg2-binary",
+    "requests",
+    "pymongo",
+    "pymysql"
+]
+
+[tool.setuptools]
+# setup_database.py foi removido do repositorio; a entrada antiga so provocava
+# erro de build. Os modulos aqui sao os que existem de facto.
+py-modules = [
+    "import_matomo_metrics",
+    "export_matomo_mariadb",
+    "import_matomo_export_to_mongo",
+]
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
