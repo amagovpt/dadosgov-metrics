@@ -11,6 +11,11 @@ São dois scripts, um por VM:
 | [`export_matomo_mariadb.py`](export_matomo_mariadb.py) | **VM do Matomo** | Lê a MariaDB (read-only) e escreve NDJSON comprimido + manifesto |
 | [`import_matomo_export_to_mongo.py`](import_matomo_export_to_mongo.py) | **VM do MongoDB** | Valida os ficheiros e carrega-os em colecções; resolve `slug → ObjectId` |
 
+Se o que existe é um **backup `.sql.gz`** da MariaDB e não acesso à base de
+dados, o importador aceita o dump directamente e os passos 0–3 não são
+necessários — ver
+[Alternativa: importar de um `.sql.gz`](#alternativa-importar-de-um-sqlgz).
+
 O script antigo continua no repositório: é a referência do mapeamento
 URL→objecto e do caminho para o PostgreSQL `metric.*`, que não foi alterado.
 
@@ -93,6 +98,69 @@ de duplicar.
 
 ---
 
+## Alternativa: importar de um `.sql.gz`
+
+Quando não há acesso à MariaDB do Matomo mas existe um backup do `mysqldump`, o
+importador aceita o dump como entrada, sem passos 0–3 e sem VM do Matomo:
+
+```bash
+# na VM do MongoDB — não precisa de driver MySQL nem de servidor MariaDB
+python3 import_matomo_export_to_mongo.py /backups/matomo-2026-07-30.sql.gz \
+    --site-id 3 --dry-run
+
+python3 import_matomo_export_to_mongo.py /backups/matomo-2026-07-30.sql.gz \
+    --site-id 3 --staging-dir /var/tmp/matomo-staging --resolve-udata
+```
+
+Aceita `.sql`, `.sql.gz`, `.sql.bz2` e `.sql.xz`; o formato é reconhecido pela
+extensão ou pelo conteúdo (`--from-sql` força, para extensões pouco comuns).
+
+### Como funciona, e porque é que os números batem certo
+
+O dump é carregado para uma base **sqlite temporária** — só as tabelas e colunas
+de que as métricas precisam (`log_link_visit_action`, `log_action`, `site`,
+`option`, e `archive_numeric_*` com `--verify-archive`) — e depois **as mesmas
+funções de extracção do `export_matomo_mariadb.py`** correm sobre essa base,
+através de um adaptador que imita a interface do driver MySQL. Não há uma segunda
+implementação das métricas: a agregação, o agrupamento dos dias no fuso do site e
+o cálculo dos `_id` continuam a viver num sítio só.
+
+Consequência prática, verificada carregando o mesmo dump para uma MariaDB a
+sério e comparando: os ficheiros produzidos pelos dois caminhos são **idênticos
+byte a byte**. Os dois caminhos são portanto intercambiáveis e substituem-se em
+vez de duplicarem no MongoDB.
+
+O prefixo das tabelas (`matomo_`, `piwik_`, …) é deduzido do próprio dump;
+`--sql-prefix` força. Funciona com as variantes do `mysqldump` que aparecem na
+prática: `--extended-insert` (o defeito) ou `--skip-extended-insert`,
+`--complete-insert`, `--hex-blob`, `--compact`. **Um dump feito com
+`--no-create-info` e sem `--complete-insert` não serve** — sem a estrutura das
+tabelas nem nomes de coluna nos `INSERT`, não há como saber a que coluna
+corresponde cada valor; o script diz isso e pára.
+
+### Opções próprias deste caminho
+
+| Opção | Para quê |
+|---|---|
+| `--site-id N` | Qual o `idsite`. Se o dump só tiver acções de um site, é escolhido sozinho; se tiver vários, é obrigatório |
+| `--date-from` / `--date-to` | Intervalo a extrair (aos pares). Por omissão, todo o histórico do dump |
+| `--staging-dir DIR` | Onde criar o sqlite e o export intermédios. Por omissão um directório temporário |
+| `--keep-staging` | Não apaga os intermédios — é o que se usa quando os números não batem certo |
+| `--verify-archive` | Compara `nb_visits` diário com as `archive_numeric_*` do próprio dump |
+| `--sql-prefix`, `--utc-days`, `--raw-all-actions`, `--no-sql-prefilter` | Equivalentes às do exportador |
+
+**Espaço em disco:** o sqlite intermédio fica da ordem do tamanho das tabelas de
+log descomprimidas, e o export intermédio soma-se-lhe. Use `--staging-dir` para
+os pôr numa partição com espaço, e `--only agg` se as acções em bruto não forem
+necessárias (poupa a maior parte do volume).
+
+O `manifest.json` do export intermédio, e o registo na colecção `imports`,
+guardam a proveniência: `source.kind` é `matomo-sql-dump` em vez de
+`matomo-mariadb`, com o caminho do dump, a versão do servidor e as contagens de
+linhas lidas.
+
+---
+
 ## O que é extraído
 
 | Família | `log_action.type` | Coluna de ligação | Métrica |
@@ -171,7 +239,9 @@ fazia `continue` silencioso).
 
 - **Não lê `matomo_archive_blob_*`.** Se o `--info` revelar purga dos logs em
   bruto, o histórico anterior ao limite de retenção não é recuperável por aqui —
-  exigiria descomprimir e interpretar o formato interno dos blobs do Matomo.
+  exigiria descomprimir e interpretar o formato interno dos blobs do Matomo. O
+  mesmo se aplica a um dump `.sql.gz`: o que lá estiver em `archive_blob_*` é
+  ignorado.
 - **Não escreve nas colecções do udata** (`dataset.metrics.*`, `metrics`,
   `site`). Essas pertencem ao DAG [`metrics_etl`](../dags/metrics_etl.py), que as
   reescreve a cada 15 minutos; escrever daqui criaria um terceiro autor no mesmo

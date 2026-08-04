@@ -1,7 +1,7 @@
 [project]
 name = "import-matomo-metrics"
-version = "0.2.0"
-description = "Extraccao de metricas do Matomo (API HTTP ou MariaDB) para PostgreSQL/MongoDB"
+version = "0.3.0"
+description = "Extraccao de metricas do Matomo (API HTTP, MariaDB ou dump .sql.gz) para PostgreSQL/MongoDB"
 requires-python = ">=3.9"
 dependencies = [
     "psycopg2-binary",
