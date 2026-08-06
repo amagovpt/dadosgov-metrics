@@ -175,6 +175,11 @@ CREATE MATERIALIZED VIEW IF NOT EXISTS metric.metrics_organizations AS
     SELECT visits.__id as __id,
            COALESCE(visits.date_metric, matomo.date_metric) as date_metric,
            COALESCE(visits.organization_id, matomo.organization_id) as organization_id,
+           -- Visitas a pagina da propria organizacao. Estava a faltar: a
+           -- visits_organizations so era usada para o join, e por isso as
+           -- visitas as organizacoes nunca chegavam a organizations_total nem,
+           -- por consequencia, a organization.metrics.views no udata.
+           visits.nb_visit as nb_visit,
            datasets.nb_visit as dataset_nb_visit,
            datasets.resource_nb_download as resource_nb_download,
            reuses.nb_visit as reuse_nb_visit,
@@ -233,6 +238,7 @@ CREATE MATERIALIZED VIEW IF NOT EXISTS metric.organizations AS
         MIN(__id) as __id,
         organization_id,
         to_char(date_trunc('month', date_metric) , 'YYYY-mm') AS metric_month,
+        sum(nb_visit) as monthly_visit,
         sum(dataset_nb_visit) as monthly_visit_dataset,
         sum(resource_nb_download) as monthly_download_resource,
         sum(reuse_nb_visit) as monthly_visit_reuse,
@@ -313,6 +319,7 @@ CREATE MATERIALIZED VIEW IF NOT EXISTS metric.organizations_total AS
     SELECT
         MIN(__id) as __id,
         organization_id,
+        sum(nb_visit) as visit,
         sum(dataset_nb_visit) as visit_dataset,
         sum(resource_nb_download) as download_resource,
         sum(reuse_nb_visit) as visit_reuse,

@@ -412,6 +412,38 @@ def _get_with_retry(url, timeout=30, max_retries=3):
             time.sleep(wait)
 
 
+def _update_views_from_totals(db, collection, endpoint, id_field, max_pages=10000):
+    """Write metrics.views from a *_total metrics endpoint into a udata collection.
+
+    Same pattern as the datasets loop: the metrics API aggregates
+    metric.visits_<objects>, which is where the Matomo history lives.
+    Returns how many documents were updated.
+    """
+    updated = 0
+    page = 1
+    while page <= max_pages:
+        url = f"{METRICS_API_URL}/{endpoint}/data/?visit__greater=0&page_size=50&page={page}"
+        data = _get_with_retry(url)
+
+        for row in data["data"]:
+            object_id = row.get(id_field)
+            visit = row.get("visit") or 0
+            if not object_id:
+                continue
+            db[collection].update_one(
+                _id_or_slug_query(object_id),
+                {"$set": {"metrics.views": visit}},
+            )
+            updated += 1
+
+        if not data["links"].get("next"):
+            break
+        page += 1
+
+    logger.info("Updated metrics.views for %d %s(s) from %s", updated, collection, endpoint)
+    return updated
+
+
 def update_udata_metrics(ti):
     """Read totals from datasets_total (PostgREST) and write to udata MongoDB.
     Also computes per-object statistics and per-resource download counts."""
@@ -546,17 +578,16 @@ def update_udata_metrics(ti):
             {"$set": {"metrics.followers": doc["count"]}},
         )
 
-    for org_id, views in extracted.get("org_views", {}).items():
-        db["organization"].update_one(
-            _id_or_slug_query(org_id),
-            {"$set": {"metrics.views": views}},
-        )
-
-    for reuse_id, views in extracted.get("reuse_views", {}).items():
-        db["reuse"].update_one(
-            _id_or_slug_query(reuse_id),
-            {"$set": {"metrics.views": views}},
-        )
+    # Organization and reuse page views come from PostgreSQL (same source as
+    # datasets, via organizations_total / reuses_total), not from the tracking
+    # events: metric_event only holds what udata itself recorded, which misses
+    # the whole Matomo history imported into metric.visits_*.
+    org_updated = _update_views_from_totals(
+        db, "organization", "organizations_total", "organization_id", max_pages
+    )
+    reuse_updated = _update_views_from_totals(
+        db, "reuse", "reuses_total", "reuse_id", max_pages
+    )
 
     for ds_id, views in extracted.get("dataservice_views", {}).items():
         db["dataservice"].update_one(
@@ -581,14 +612,19 @@ def update_udata_metrics(ti):
 
     client.close()
     logger.info(
-        "Updated %d datasets + %d resources + org/reuse/site stats in MongoDB for %s",
+        "Updated %d datasets + %d resources + %d organizations + %d reuses "
+        "+ site stats in MongoDB for %s",
         updated,
         resource_updated,
+        org_updated,
+        reuse_updated,
         today,
     )
     return {
         "datasets_updated": updated,
         "resources_updated": resource_updated,
+        "organizations_updated": org_updated,
+        "reuses_updated": reuse_updated,
         "site_metrics_date": today,
     }
 

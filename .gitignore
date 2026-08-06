@@ -13,6 +13,8 @@ mise.local.toml
 node_modules/
 
 scripts/build
+scripts/matomo/import_matomo_metrics.egg-info
 scripts/import_matomo_metrics.egg-info
+scripts/matomo/.venv
 scripts/.venv
 scripts/venv
