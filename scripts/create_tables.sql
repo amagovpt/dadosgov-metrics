@@ -124,7 +124,31 @@ CREATE TABLE IF NOT EXISTS metric.matomo_dataservices
 
 
 -- Aggregated metrics tables
-CREATE MATERIALIZED VIEW IF NOT EXISTS metric.metrics_datasets AS
+-- As materialized views sao dados derivados: em vez de IF NOT EXISTS (que
+-- deixaria intactas as versoes antigas em ambientes ja instalados, e obrigaria
+-- a uma migracao a cada alteracao), sao sempre reconstruidas a partir das
+-- tabelas base. O setup.py corre este ficheiro num unico execute, portanto tudo
+-- isto acontece numa transaccao: quem esta a ler (metrics-api) continua a ver as
+-- views antigas ate ao commit. Os indices delas sao recriados no fim do ficheiro.
+--
+-- Ordem inversa a da criacao, para nao ser preciso CASCADE: quem depende cai primeiro.
+DROP MATERIALIZED VIEW IF EXISTS metric.dataservices_total;
+DROP MATERIALIZED VIEW IF EXISTS metric.resources_total;
+DROP MATERIALIZED VIEW IF EXISTS metric.organizations_total;
+DROP MATERIALIZED VIEW IF EXISTS metric.reuses_total;
+DROP MATERIALIZED VIEW IF EXISTS metric.datasets_total;
+DROP MATERIALIZED VIEW IF EXISTS metric.site;
+DROP MATERIALIZED VIEW IF EXISTS metric.dataservices;
+DROP MATERIALIZED VIEW IF EXISTS metric.resources;
+DROP MATERIALIZED VIEW IF EXISTS metric.organizations;
+DROP MATERIALIZED VIEW IF EXISTS metric.reuses;
+DROP MATERIALIZED VIEW IF EXISTS metric.datasets;
+DROP MATERIALIZED VIEW IF EXISTS metric.metrics_organizations;
+DROP MATERIALIZED VIEW IF EXISTS metric.metrics_dataservices;
+DROP MATERIALIZED VIEW IF EXISTS metric.metrics_reuses;
+DROP MATERIALIZED VIEW IF EXISTS metric.metrics_datasets;
+
+CREATE MATERIALIZED VIEW metric.metrics_datasets AS
     SELECT visits.__id as __id,
            COALESCE(visits.date_metric, matomo.date_metric) as date_metric,
            COALESCE(visits.dataset_id, matomo.dataset_id) as dataset_id,
@@ -145,7 +169,7 @@ CREATE MATERIALIZED VIEW IF NOT EXISTS metric.metrics_datasets AS
 ;
 
 
-CREATE MATERIALIZED VIEW IF NOT EXISTS metric.metrics_reuses AS
+CREATE MATERIALIZED VIEW metric.metrics_reuses AS
     SELECT visits.__id as __id,
            COALESCE(visits.date_metric, matomo.date_metric) as date_metric,
            COALESCE(visits.reuse_id, matomo.reuse_id) as reuse_id,
@@ -158,7 +182,7 @@ CREATE MATERIALIZED VIEW IF NOT EXISTS metric.metrics_reuses AS
        visits.date_metric = matomo.date_metric
 ;
 
-CREATE MATERIALIZED VIEW IF NOT EXISTS metric.metrics_dataservices AS
+CREATE MATERIALIZED VIEW metric.metrics_dataservices AS
     SELECT visits.__id as __id,
            COALESCE(visits.date_metric, matomo.date_metric) as date_metric,
            COALESCE(visits.dataservice_id, matomo.dataservice_id) as dataservice,
@@ -171,7 +195,7 @@ CREATE MATERIALIZED VIEW IF NOT EXISTS metric.metrics_dataservices AS
        visits.date_metric = matomo.date_metric
 ;
 
-CREATE MATERIALIZED VIEW IF NOT EXISTS metric.metrics_organizations AS
+CREATE MATERIALIZED VIEW metric.metrics_organizations AS
     SELECT visits.__id as __id,
            COALESCE(visits.date_metric, matomo.date_metric) as date_metric,
            COALESCE(visits.organization_id, matomo.organization_id) as organization_id,
@@ -211,7 +235,7 @@ CREATE MATERIALIZED VIEW IF NOT EXISTS metric.metrics_organizations AS
 ;
 
 -- Monthly aggregated metrics tables
-CREATE MATERIALIZED VIEW IF NOT EXISTS metric.datasets AS
+CREATE MATERIALIZED VIEW metric.datasets AS
     SELECT
         MIN(__id) as __id,
         dataset_id,
@@ -223,7 +247,7 @@ CREATE MATERIALIZED VIEW IF NOT EXISTS metric.datasets AS
     GROUP BY metric_month, dataset_id, organization_id
 ;
 
-CREATE MATERIALIZED VIEW IF NOT EXISTS metric.reuses AS
+CREATE MATERIALIZED VIEW metric.reuses AS
     SELECT
         MIN(__id) as __id,
         reuse_id,
@@ -233,7 +257,7 @@ CREATE MATERIALIZED VIEW IF NOT EXISTS metric.reuses AS
     GROUP BY metric_month, reuse_id
 ;
 
-CREATE MATERIALIZED VIEW IF NOT EXISTS metric.organizations AS
+CREATE MATERIALIZED VIEW metric.organizations AS
     SELECT
         MIN(__id) as __id,
         organization_id,
@@ -247,7 +271,7 @@ CREATE MATERIALIZED VIEW IF NOT EXISTS metric.organizations AS
     GROUP BY metric_month, organization_id
 ;
 
-CREATE MATERIALIZED VIEW IF NOT EXISTS metric.resources AS
+CREATE MATERIALIZED VIEW metric.resources AS
     SELECT
         MIN(__id) as __id,
         resource_id,
@@ -258,7 +282,7 @@ CREATE MATERIALIZED VIEW IF NOT EXISTS metric.resources AS
     GROUP BY metric_month, resource_id, dataset_id
 ;
 
-CREATE MATERIALIZED VIEW IF NOT EXISTS metric.dataservices AS
+CREATE MATERIALIZED VIEW metric.dataservices AS
     SELECT
         MIN(__id) as __id,
         dataservice_id,
@@ -269,7 +293,7 @@ CREATE MATERIALIZED VIEW IF NOT EXISTS metric.dataservices AS
 ;
 
 -- Global site table
-CREATE MATERIALIZED VIEW IF NOT EXISTS metric.site AS
+CREATE MATERIALIZED VIEW metric.site AS
     SELECT __id,
            COALESCE(datasets.metric_month, reuses.metric_month) as metric_month,
            datasets.monthly_visit as monthly_visit_dataset,
@@ -294,7 +318,7 @@ CREATE MATERIALIZED VIEW IF NOT EXISTS metric.site AS
 ;
 
 -- Sum tables
-CREATE MATERIALIZED VIEW IF NOT EXISTS metric.datasets_total AS
+CREATE MATERIALIZED VIEW metric.datasets_total AS
     SELECT
         MIN(__id) as __id,
         dataset_id,
@@ -305,7 +329,7 @@ CREATE MATERIALIZED VIEW IF NOT EXISTS metric.datasets_total AS
     GROUP BY dataset_id
 ;
 
-CREATE MATERIALIZED VIEW IF NOT EXISTS metric.reuses_total AS
+CREATE MATERIALIZED VIEW metric.reuses_total AS
     SELECT
         MIN(__id) as __id,
         reuse_id,
@@ -315,7 +339,7 @@ CREATE MATERIALIZED VIEW IF NOT EXISTS metric.reuses_total AS
     GROUP BY reuse_id
 ;
 
-CREATE MATERIALIZED VIEW IF NOT EXISTS metric.organizations_total AS
+CREATE MATERIALIZED VIEW metric.organizations_total AS
     SELECT
         MIN(__id) as __id,
         organization_id,
@@ -329,7 +353,7 @@ CREATE MATERIALIZED VIEW IF NOT EXISTS metric.organizations_total AS
     GROUP BY organization_id
 ;
 
-CREATE MATERIALIZED VIEW IF NOT EXISTS metric.resources_total AS
+CREATE MATERIALIZED VIEW metric.resources_total AS
     SELECT
         MIN(__id) as __id,
         resource_id,
@@ -339,7 +363,7 @@ CREATE MATERIALIZED VIEW IF NOT EXISTS metric.resources_total AS
     GROUP BY resource_id, dataset_id
 ;
 
-CREATE MATERIALIZED VIEW IF NOT EXISTS metric.dataservices_total AS
+CREATE MATERIALIZED VIEW metric.dataservices_total AS
     SELECT
         MIN(__id) AS __id,
         dataservice_id,
