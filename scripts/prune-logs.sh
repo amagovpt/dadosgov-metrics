@@ -9,8 +9,8 @@
 # que já existiram no .env, também NÃO são chaves nativas do Airflow — a
 # retenção real é feita por este script.
 #
-# Agendamento: DAG 'logs_cleanup' (dags/logs_cleanup.py), que o invoca dentro do
-# container com AIRFLOW_LOG_DIR=/opt/airflow/logs.
+# Agendamento: DAG 'maintenance' (dags/maintenance.py), task 'prune_logs', que o
+# invoca dentro do container com AIRFLOW_LOG_DIR=/opt/airflow/logs.
 #
 # Dois critérios, aplicados por esta ordem:
 #
@@ -19,10 +19,15 @@
 #               isso a retenção efetiva é ~RETENTION_DAYS+1 dias.
 #
 #   2) TAMANHO — se a árvore continuar acima de MAX_MB, remove os ficheiros mais
-#               antigos até ficar abaixo. Este tecto padroniza a diretoria pelo
-#               mesmo limite dos caps json-file dos composes (50 MB x 5 = 250 MB).
-#               Sem ele, um pico de atividade dentro da janela de retenção podia
-#               encher o disco antes de a idade chegar para limpar.
+#               antigos até ficar abaixo. É uma rede de segurança para um pico
+#               de atividade dentro da janela de retenção, não o mecanismo
+#               principal: o tecto tem de ficar bem acima do volume normal de
+#               RETENTION_DAYS, senão passa a dominar e a retenção real cai
+#               para o MIN_AGE_MIN abaixo. Foi o que aconteceu com o antigo
+#               default de 250 MB (herdado do cap json-file dos composes, que
+#               é por container e só para stdout): a 2026-09-17 apagou 14 GB de
+#               logs com menos de um dia sem o critério de idade chegar a
+#               aplicar-se.
 #
 # São milhares de ficheiros pequenos numa árvore de diretórios, por isso usa-se
 # find (o logrotate, orientado a ficheiros nomeados, não serve).
@@ -31,7 +36,7 @@ set -eu
 # Default: caminho no host. Dentro do container passa-se AIRFLOW_LOG_DIR.
 LOG_DIR="${AIRFLOW_LOG_DIR:-/opt/dadosgov-metrics/logs}"
 RETENTION_DAYS="${AIRFLOW_LOG_RETENTION_DAYS:-3}"
-MAX_MB="${AIRFLOW_LOG_MAX_MB:-250}"
+MAX_MB="${AIRFLOW_LOG_MAX_MB:-1024}"
 
 # Ficheiros modificados nos últimos MIN_AGE_MIN minutos nunca são removidos pelo
 # critério de tamanho: podem estar a ser escritos por tarefas em execução.

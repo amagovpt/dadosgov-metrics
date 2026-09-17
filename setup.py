@@ -7,7 +7,7 @@ Automatiza todos os passos descritos em config/airflow-configuracao.md:
   2. Airflow Connections (via AIRFLOW_CONN_* no .env, sem import)
   3. Airflow Variables (via AIRFLOW_VAR_* no .env, sem import)
   4. Criacao das tabelas no Hydra (PostgreSQL)
-  5. Ativacao das DAGs de manutencao (logs_cleanup)
+  5. Ativacao das DAGs de manutencao (maintenance)
   6. Trigger do DAG metrics_etl
 
 Uso (executar na raiz do repositorio):
@@ -330,7 +330,7 @@ def dag_is_paused(container, dag_id):
 def step_unpause_maintenance_dags(container):
     banner("5. Ativar DAGs de manutencao")
 
-    dag_id = "logs_cleanup"
+    dag_id = "maintenance"
 
     # Incondicional: a limpeza de logs nao deve depender de uma escolha do
     # operador. Sem isto a DAG fica em pausa (dags_are_paused_at_creation=True)
@@ -467,7 +467,7 @@ def main():
     banner("Setup concluido!")
     print(f"  Airflow UI: http://localhost:{webserver_port}")
     print(f"  Container:  {container}")
-    print(f"  DAGs:       metrics_etl, logs_cleanup (limpeza diaria dos logs)")
+    print(f"  DAGs:       metrics_etl, maintenance (limpeza diaria de logs e metadata)")
     print(f"  Docs:       config/airflow-configuracao.md\n")
 
 

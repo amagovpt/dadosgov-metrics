@@ -33,9 +33,11 @@ services:
     env_file:
       - .env
     # NOTA: AIRFLOW__LOGGING__LOG_RETENTION_DAYS / LOG_CLEANUP_ENABLED NÃO são
-    # chaves nativas do Airflow (não fazem nada). A retenção real dos logs é feita
-    # no host pelo script /opt/dadosgov-metrics/prune-logs.sh, agendado pelo
-    # systemd timer 'dadosgov-metrics-logclean.timer' (diário, retém 3 dias).
+    # chaves nativas do Airflow (não fazem nada). A retenção real é feita pela DAG
+    # 'maintenance' (dags/maintenance.py, diária às 03:00): limpa os task logs de
+    # ./logs via scripts/prune-logs.sh e a metadata em ./pg-airflow via
+    # 'airflow db clean'. O systemd timer 'dadosgov-metrics-logclean.timer' que
+    # fazia isto no host foi removido a 2026-08-03.
     volumes:
       - ./dags:/opt/airflow/dags
       - ./scripts:/opt/airflow/scripts

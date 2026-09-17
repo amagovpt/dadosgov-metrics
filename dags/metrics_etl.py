@@ -14,6 +14,69 @@ try:
 except Exception:
     METRICS_API_URL = "http://host.docker.internal:8006/api"
 
+# Janela, em dias, das agregações DIÁRIAS (as que alimentam
+# metric.visits_datasets e metric.visits_resources). Só essas: os totais
+# cumulativos mais abaixo têm de continuar a varrer o histórico completo, senão
+# passavam a ser "totais dos últimos N dias" e o MongoDB/udata recebia valores
+# errados.
+#
+# Porque é seguro janelar as diárias: os destinos fazem UPSERT com índice único
+# em (dataset_id, date_metric) / (resource_id, date_metric), pelo que reprocessar
+# só a janela recente é equivalente a reprocessar tudo — as linhas mais antigas
+# ficam como estão. E ficam: a 2026-09-17 o metric.visits_datasets tinha 962 764
+# linhas desde 2018-07-24, enquanto o metric_event no Mongo tem TTL de 90 dias
+# (índice created_at_1, expireAfterSeconds=7776000). O Mongo é a store de curto
+# prazo, o Postgres é o armazém.
+#
+# 14 dias dá margem para eventos que cheguem atrasados e não custa nada: a
+# atividade recente é pouca, por isso 7 e 14 dias dão o mesmo payload (7,2 MB).
+# Sem a janela eram 147,3 MB por run, 96 runs/dia — 95% do payload era o mesmo
+# bloco histórico re-enviado de cada vez.
+#
+# Para um backfill completo (ambiente novo, ou recuperar uma falha longa), pôr a
+# Variable METRICS_DAILY_WINDOW_DAYS a 0 corre sem filtro, como antes.
+try:
+    from airflow.models import Variable as _Variable
+    _window_raw = _Variable.get("METRICS_DAILY_WINDOW_DAYS", default_var="14")
+except Exception:
+    _window_raw = "14"
+try:
+    DAILY_WINDOW_DAYS = int(_window_raw)
+except ValueError:
+    # Um valor inválido ("off", "0 dias") caía em silêncio para 14 — e quem
+    # tentasse desligar a janela para um backfill não dava por isso.
+    logger.warning(
+        "METRICS_DAILY_WINDOW_DAYS=%r não é inteiro; a usar 14 dias", _window_raw
+    )
+    DAILY_WINDOW_DAYS = 14
+
+
+def _daily_window_match():
+    """Cláusulas de '$match' da janela, ou {} se estiver desligada.
+
+    O corte é à MEIA-NOITE UTC de (hoje - DAILY_WINDOW_DAYS), nunca 'agora - N
+    dias' com hora. As diárias agrupam por dia ('$dateToString', em UTC) e o
+    destino faz 'DO UPDATE SET nb_visit = EXCLUDED.nb_visit' — substitui, não
+    soma nem faz max. Com um corte a meio do dia, o dia da fronteira entrava só
+    parcialmente (os eventos depois da hora do corte) e a cada run de 15 min o
+    seu nb_visit era reescrito com um valor cada vez menor, até sobrar só o dos
+    últimos minutos do dia: um dia de histórico corrompido por dia, em silêncio.
+    Alinhado à meia-noite, cada dia está inteiro dentro da janela ou inteiro
+    fora — nunca parcial. (Achado da auditoria de 2026-09-17; estava latente
+    porque a fronteira caía no intervalo sem eventos de 08-25..09-08.)
+    """
+    if DAILY_WINDOW_DAYS <= 0:
+        return {}
+    from datetime import timezone
+
+    hoje = datetime.now(timezone.utc).date()
+    corte = datetime.combine(
+        hoje - timedelta(days=DAILY_WINDOW_DAYS),
+        datetime.min.time(),
+        tzinfo=timezone.utc,
+    )
+    return {"created_at": {"$gte": corte}}
+
 
 def _id_or_slug_query(identifier):
     """Return a MongoDB query matching by ObjectId or slug."""
@@ -63,7 +126,13 @@ def extract_tracking_events():
     dataset_views_daily = []
     for doc in db["metric_event"].aggregate(
         [
-            {"$match": {"object_type": "dataset", "event_type": "view"}},
+            {
+                "$match": {
+                    "object_type": "dataset",
+                    "event_type": "view",
+                    **_daily_window_match(),
+                }
+            },
             {
                 "$group": {
                     "_id": {
@@ -100,6 +169,7 @@ def extract_tracking_events():
                 "$match": {
                     "event_type": "download",
                     "extra.resource_id": {"$exists": True, "$ne": None},
+                    **_daily_window_match(),
                 }
             },
             {
@@ -237,9 +307,11 @@ def extract_tracking_events():
     client.close()
 
     logger.info(
-        "Aggregated %d events: %d dataset views, %d downloads, %d resource downloads, "
-        "%d org views, %d reuse views, %d daily dataset rows, %d daily resource rows",
+        "Aggregated %d events (janela das diarias: %s): %d dataset views, %d downloads, "
+        "%d resource downloads, %d org views, %d reuse views, %d daily dataset rows, "
+        "%d daily resource rows",
         total_events,
+        ("%d dias" % DAILY_WINDOW_DAYS) if DAILY_WINDOW_DAYS > 0 else "desligada (historico completo)",
         len(view_counts),
         len(download_counts),
         len(resource_downloads),
@@ -685,7 +757,16 @@ with DAG(
     },
 ) as dag:
     extrair = PythonOperator(
-        task_id="extract_tracking_events", python_callable=extract_tracking_events
+        task_id="extract_tracking_events",
+        python_callable=extract_tracking_events,
+        # O retorno desta task é o histórico completo do metric_event (~148 MB
+        # em 2026-09 e a crescer, porque nenhuma agregação filtra por data).
+        # Sem este flag o PythonOperator escreve-o inteiro no log da task, numa
+        # única linha 'Done. Returned value was: ...' — com 96 runs/dia eram
+        # ~14 GB/dia a entrar em ./logs.
+        # O valor continua a ser enviado para o XCom: send_to_metrics_db,
+        # refresh_materialized_views e update_udata_metrics leem-no de lá.
+        show_return_value_in_logs=False,
     )
     enviar_pg = PythonOperator(
         task_id="send_to_metrics_db", python_callable=send_to_metrics_db
