@@ -334,6 +334,68 @@ def extract_tracking_events():
     }
 
 
+def _upsert_daily(cursor, table, key, extra_cols, rows):
+    """Upsert de linhas (date_metric, <key>, *extra_cols, nb_visit) em `table`.
+
+    Mesma semantica do antigo ON CONFLICT (<key>, date_metric) linha a linha:
+    nb_visit e substituido e as extra_cols so sao substituidas se vierem
+    preenchidas. Se o lote trouxer a mesma chave varias vezes (slug e ObjectId
+    do mesmo dataset), fica o nb_visit da ultima e, por coluna, o ultimo valor
+    nao nulo. Devolve o numero de linhas recebidas.
+    """
+    from psycopg2.extras import execute_values
+
+    cols = ["date_metric", key] + extra_cols + ["nb_visit"]
+    cursor.execute(
+        f"CREATE TEMP TABLE _raw ON COMMIT DROP AS "
+        f"SELECT {', '.join(cols)}, 0::bigint AS ord FROM {table} WITH NO DATA"
+    )
+    execute_values(
+        cursor,
+        f"INSERT INTO _raw ({', '.join(cols)}, ord) VALUES %s",
+        [row + (i,) for i, row in enumerate(rows)],
+        page_size=5000,
+    )
+    last_not_null = [
+        f"(array_agg({c} ORDER BY ord DESC) FILTER (WHERE {c} IS NOT NULL))[1] AS {c}"
+        for c in extra_cols
+    ]
+    cursor.execute(
+        f"""
+        CREATE TEMP TABLE _staging ON COMMIT DROP AS
+        SELECT date_metric, {key}, {', '.join(last_not_null)},
+               (array_agg(nb_visit ORDER BY ord DESC))[1] AS nb_visit
+        FROM _raw GROUP BY date_metric, {key}
+        """
+    )
+    sets = ["nb_visit = s.nb_visit"] + [
+        f"{c} = COALESCE(s.{c}, t.{c})" for c in extra_cols
+    ]
+    changed = ["t.nb_visit IS DISTINCT FROM s.nb_visit"] + [
+        f"(s.{c} IS NOT NULL AND t.{c} IS DISTINCT FROM s.{c})" for c in extra_cols
+    ]
+    cursor.execute(
+        f"""
+        UPDATE {table} t SET {', '.join(sets)}
+        FROM _staging s
+        WHERE t.{key} = s.{key} AND t.date_metric = s.date_metric
+          AND ({' OR '.join(changed)})
+        """
+    )
+    cursor.execute(
+        f"""
+        INSERT INTO {table} ({', '.join(cols)})
+        SELECT {', '.join(cols)} FROM _staging s
+        WHERE NOT EXISTS (
+            SELECT 1 FROM {table} t
+            WHERE t.{key} = s.{key} AND t.date_metric = s.date_metric
+        )
+        """
+    )
+    cursor.execute("DROP TABLE _raw, _staging")
+    return len(rows)
+
+
 def send_to_metrics_db(ti):
     """Write daily views/downloads to PostgreSQL metric schema (base tables)."""
     from airflow.providers.postgres.hooks.postgres import PostgresHook
@@ -361,52 +423,42 @@ def send_to_metrics_db(ti):
     )
     conn.commit()
 
-    # Write dataset views to metric.visits_datasets
-    datasets_inserted = 0
-    for row in extracted.get("dataset_views_daily", []):
-        cursor.execute(
-            """
-            INSERT INTO metric.visits_datasets
-                (date_metric, dataset_id, organization_id, nb_visit)
-            VALUES (%s, %s, %s, %s)
-            ON CONFLICT (dataset_id, date_metric)
-            DO UPDATE SET nb_visit = EXCLUDED.nb_visit,
-                          organization_id = COALESCE(EXCLUDED.organization_id,
-                                                     metric.visits_datasets.organization_id)
-            """,
+    # Upsert em duas fases (UPDATE + INSERT dos que faltam) em vez de
+    # INSERT ... ON CONFLICT DO UPDATE. No ON CONFLICT o Postgres calcula o
+    # DEFAULT nextval() do __id antes de saber que ha conflito, por isso cada
+    # linha re-enviada gastava um valor da sequencia mesmo acabando em UPDATE.
+    # A 96 runs/dia o visits_datasets___id_seq esgotou os 32 bits em 2026-09-12,
+    # ~6 meses depois do arranque do DAG. Aqui so os INSERT reais
+    # consomem a sequencia, e o UPDATE so toca nas linhas cujo valor mudou (o
+    # ON CONFLICT reescrevia todas: ~200M updates/mes para ~1M linhas).
+    # Corre sem concorrencia (max_active_runs=1); se houver outro escritor, o
+    # indice unico continua a impedir duplicados.
+    datasets_inserted = _upsert_daily(
+        cursor,
+        table="metric.visits_datasets",
+        key="dataset_id",
+        extra_cols=["organization_id"],
+        rows=[
+            (r["date_metric"], r["dataset_id"], r.get("organization_id"), r["nb_visit"])
+            for r in extracted.get("dataset_views_daily", [])
+        ],
+    )
+    resources_inserted = _upsert_daily(
+        cursor,
+        table="metric.visits_resources",
+        key="resource_id",
+        extra_cols=["dataset_id", "organization_id"],
+        rows=[
             (
-                row["date_metric"],
-                row["dataset_id"],
-                row.get("organization_id"),
-                row["nb_visit"],
-            ),
-        )
-        datasets_inserted += 1
-
-    # Write resource downloads to metric.visits_resources
-    resources_inserted = 0
-    for row in extracted.get("resource_downloads_daily", []):
-        cursor.execute(
-            """
-            INSERT INTO metric.visits_resources
-                (date_metric, resource_id, dataset_id, organization_id, nb_visit)
-            VALUES (%s, %s, %s, %s, %s)
-            ON CONFLICT (resource_id, date_metric)
-            DO UPDATE SET nb_visit = EXCLUDED.nb_visit,
-                          dataset_id = COALESCE(EXCLUDED.dataset_id,
-                                                metric.visits_resources.dataset_id),
-                          organization_id = COALESCE(EXCLUDED.organization_id,
-                                                     metric.visits_resources.organization_id)
-            """,
-            (
-                row["date_metric"],
-                row["resource_id"],
-                row.get("dataset_id"),
-                row.get("organization_id"),
-                row["nb_visit"],
-            ),
-        )
-        resources_inserted += 1
+                r["date_metric"],
+                r["resource_id"],
+                r.get("dataset_id"),
+                r.get("organization_id"),
+                r["nb_visit"],
+            )
+            for r in extracted.get("resource_downloads_daily", [])
+        ],
+    )
 
     conn.commit()
     cursor.close()
