@@ -15,7 +15,8 @@ except Exception:
     METRICS_API_URL = "http://host.docker.internal:8006/api"
 
 # Janela, em dias, das agregações DIÁRIAS (as que alimentam
-# metric.visits_datasets e metric.visits_resources). Só essas: os totais
+# metric.visits_datasets, _resources, _organizations, _reuses e _dataservices).
+# Só essas: os totais
 # cumulativos mais abaixo têm de continuar a varrer o histórico completo, senão
 # passavam a ser "totais dos últimos N dias" e o MongoDB/udata recebia valores
 # errados.
@@ -87,6 +88,58 @@ def _id_or_slug_query(identifier):
         return {"slug": identifier}
 
 
+def _slug_lookup(db, collection):
+    """slug -> ObjectId (string) de todos os documentos da coleção."""
+    return {
+        doc["slug"]: str(doc["_id"])
+        for doc in db[collection].find({"slug": {"$exists": True}}, {"slug": 1})
+    }
+
+
+def _daily_views(db, object_type, resolve):
+    """{(object_id, 'YYYY-MM-DD'): visitas} dos eventos 'view' na janela diária.
+
+    O udata regista a visita umas vezes com o ObjectId e outras com o slug do
+    mesmo objeto (nas organizações e reutilizações quase sempre o slug).
+    `resolve` converte o slug no ObjectId e as duas partes são SOMADAS: antes
+    iam como linhas separadas e o upsert ficava só com uma delas (em 2026-08-14
+    perderam-se assim ~10% das visitas a datasets do dia). Um slug que não se
+    resolve (objeto apagado, slug antigo) fica como chave tal como veio.
+    """
+    daily = {}
+    for doc in db["metric_event"].aggregate(
+        [
+            {
+                "$match": {
+                    "object_type": object_type,
+                    "event_type": "view",
+                    **_daily_window_match(),
+                }
+            },
+            {
+                "$group": {
+                    "_id": {
+                        "object_id": "$object_id",
+                        "date": {
+                            "$dateToString": {
+                                "format": "%Y-%m-%d",
+                                "date": "$created_at",
+                            }
+                        },
+                    },
+                    "total": {"$sum": 1},
+                }
+            },
+        ]
+    ):
+        object_id = resolve(doc["_id"]["object_id"])
+        if not object_id:
+            continue
+        key = (object_id, doc["_id"]["date"])
+        daily[key] = daily.get(key, 0) + doc["total"]
+    return daily
+
+
 def extract_tracking_events():
     """Aggregate views and downloads from tracking_events collection."""
     from airflow.providers.mongo.hooks.mongo import MongoHook
@@ -123,41 +176,7 @@ def extract_tracking_events():
             resource_dataset_lookup[str(res["_id"])] = str(doc["_id"])
 
     # Daily views per dataset (for PostgreSQL metric.visits_datasets)
-    # O udata regista a visita umas vezes com o ObjectId e outras com o slug do
-    # mesmo dataset; depois de resolver o slug, as duas partes têm de ser
-    # SOMADAS. Antes cada uma ia como linha separada e o upsert ficava só com
-    # uma delas: em 2026-08-14 perderam-se assim ~10% das visitas do dia.
-    daily_views = {}
-    for doc in db["metric_event"].aggregate(
-        [
-            {
-                "$match": {
-                    "object_type": "dataset",
-                    "event_type": "view",
-                    **_daily_window_match(),
-                }
-            },
-            {
-                "$group": {
-                    "_id": {
-                        "object_id": "$object_id",
-                        "date": {
-                            "$dateToString": {
-                                "format": "%Y-%m-%d",
-                                "date": "$created_at",
-                            }
-                        },
-                    },
-                    "total": {"$sum": 1},
-                }
-            },
-        ]
-    ):
-        dataset_id = resolve_dataset_id(doc["_id"]["object_id"])
-        if not dataset_id:
-            continue
-        key = (dataset_id, doc["_id"]["date"])
-        daily_views[key] = daily_views.get(key, 0) + doc["total"]
+    daily_views = _daily_views(db, "dataset", resolve_dataset_id)
     dataset_views_daily = [
         {
             "dataset_id": dataset_id,
@@ -166,6 +185,53 @@ def extract_tracking_events():
             "organization_id": org_lookup.get(dataset_id),
         }
         for (dataset_id, date_metric), total in daily_views.items()
+    ]
+
+    # Daily views per organization / reuse / dataservice (for PostgreSQL
+    # metric.visits_organizations / _reuses / _dataservices). Até aqui só a
+    # importação do Matomo escrevia nestas tabelas, e ela parou a 2026-06-09:
+    # desde então as visitas a estes objetos nunca chegavam ao udata, e o
+    # metric_event só as guarda 90 dias.
+    org_slugs = _slug_lookup(db, "organization")
+    reuse_slugs = _slug_lookup(db, "reuse")
+    dataservice_slugs = _slug_lookup(db, "dataservice")
+    reuse_org = {
+        str(doc["_id"]): str(doc["organization"])
+        for doc in db["reuse"].find({"organization": {"$ne": None}}, {"organization": 1})
+    }
+    dataservice_org = {
+        str(doc["_id"]): str(doc["organization"])
+        for doc in db["dataservice"].find(
+            {"organization": {"$ne": None}}, {"organization": 1}
+        )
+    }
+    organization_views_daily = [
+        {"organization_id": oid, "date_metric": day, "nb_visit": total}
+        for (oid, day), total in _daily_views(
+            db, "organization", lambda i: org_slugs.get(i, i) if i else None
+        ).items()
+    ]
+    reuse_views_daily = [
+        {
+            "reuse_id": rid,
+            "date_metric": day,
+            "nb_visit": total,
+            "organization_id": reuse_org.get(rid),
+        }
+        for (rid, day), total in _daily_views(
+            db, "reuse", lambda i: reuse_slugs.get(i, i) if i else None
+        ).items()
+    ]
+    dataservice_views_daily = [
+        {
+            "dataservice_id": did,
+            "date_metric": day,
+            "nb_visit": total,
+            "organization_id": dataservice_org.get(did),
+        }
+        for (did, day), total in _daily_views(
+            db, "dataservice", lambda i: dataservice_slugs.get(i, i) if i else None
+        ).items()
     ]
 
     # Daily downloads per resource (for PostgreSQL metric.visits_resources)
@@ -316,7 +382,7 @@ def extract_tracking_events():
     logger.info(
         "Aggregated %d events (janela das diarias: %s): %d dataset views, %d downloads, "
         "%d resource downloads, %d org views, %d reuse views, %d daily dataset rows, "
-        "%d daily resource rows",
+        "%d daily resource rows, %d/%d/%d daily organization/reuse/dataservice rows",
         total_events,
         ("%d dias" % DAILY_WINDOW_DAYS) if DAILY_WINDOW_DAYS > 0 else "desligada (historico completo)",
         len(view_counts),
@@ -326,6 +392,9 @@ def extract_tracking_events():
         len(reuse_views),
         len(dataset_views_daily),
         len(resource_downloads_daily),
+        len(organization_views_daily),
+        len(reuse_views_daily),
+        len(dataservice_views_daily),
     )
     return {
         "dataset_views": view_counts,
@@ -338,6 +407,9 @@ def extract_tracking_events():
         "total_events": total_events,
         "dataset_views_daily": dataset_views_daily,
         "resource_downloads_daily": resource_downloads_daily,
+        "organization_views_daily": organization_views_daily,
+        "reuse_views_daily": reuse_views_daily,
+        "dataservice_views_daily": dataservice_views_daily,
     }
 
 
@@ -370,7 +442,7 @@ def _upsert_daily(cursor, table, key, extra_cols, rows):
     cursor.execute(
         f"""
         CREATE TEMP TABLE _staging ON COMMIT DROP AS
-        SELECT date_metric, {key}, {', '.join(last_not_null)},
+        SELECT {', '.join(["date_metric", key] + last_not_null)},
                (array_agg(nb_visit ORDER BY ord DESC))[1] AS nb_visit
         FROM _raw GROUP BY date_metric, {key}
         """
@@ -428,6 +500,15 @@ def send_to_metrics_db(ti):
         ON metric.visits_resources (resource_id, date_metric)
         """
     )
+    for table, key in [
+        ("visits_organizations", "organization_id"),
+        ("visits_reuses", "reuse_id"),
+        ("visits_dataservices", "dataservice_id"),
+    ]:
+        cursor.execute(
+            f"CREATE UNIQUE INDEX IF NOT EXISTS {table}_upsert_idx "
+            f"ON metric.{table} ({key}, date_metric)"
+        )
     conn.commit()
 
     # Upsert em duas fases (UPDATE + INSERT dos que faltam) em vez de
@@ -466,19 +547,61 @@ def send_to_metrics_db(ti):
             for r in extracted.get("resource_downloads_daily", [])
         ],
     )
+    organizations_inserted = _upsert_daily(
+        cursor,
+        table="metric.visits_organizations",
+        key="organization_id",
+        extra_cols=[],
+        rows=[
+            (r["date_metric"], r["organization_id"], r["nb_visit"])
+            for r in extracted.get("organization_views_daily", [])
+        ],
+    )
+    reuses_inserted = _upsert_daily(
+        cursor,
+        table="metric.visits_reuses",
+        key="reuse_id",
+        extra_cols=["organization_id"],
+        rows=[
+            (r["date_metric"], r["reuse_id"], r.get("organization_id"), r["nb_visit"])
+            for r in extracted.get("reuse_views_daily", [])
+        ],
+    )
+    dataservices_inserted = _upsert_daily(
+        cursor,
+        table="metric.visits_dataservices",
+        key="dataservice_id",
+        extra_cols=["organization_id"],
+        rows=[
+            (
+                r["date_metric"],
+                r["dataservice_id"],
+                r.get("organization_id"),
+                r["nb_visit"],
+            )
+            for r in extracted.get("dataservice_views_daily", [])
+        ],
+    )
 
     conn.commit()
     cursor.close()
     conn.close()
 
     logger.info(
-        "Wrote %d dataset visit rows + %d resource download rows to PostgreSQL metric schema",
+        "Wrote %d dataset visit rows + %d resource download rows + %d/%d/%d "
+        "organization/reuse/dataservice visit rows to PostgreSQL metric schema",
         datasets_inserted,
         resources_inserted,
+        organizations_inserted,
+        reuses_inserted,
+        dataservices_inserted,
     )
     return {
         "datasets_inserted": datasets_inserted,
         "resources_inserted": resources_inserted,
+        "organizations_inserted": organizations_inserted,
+        "reuses_inserted": reuses_inserted,
+        "dataservices_inserted": dataservices_inserted,
     }
 
 
@@ -547,10 +670,14 @@ def _update_views_from_totals(db, collection, endpoint, id_field, max_pages=1000
     """Write metrics.views from a *_total metrics endpoint into a udata collection.
 
     Same pattern as the datasets loop: the metrics API aggregates
-    metric.visits_<objects>, which is where the Matomo history lives.
-    Returns how many documents were updated.
+    metric.visits_<objects>, which is where the Matomo history lives. Linhas
+    com o slug e com o ObjectId do mesmo objeto são somadas antes de escrever
+    (ver update_udata_metrics). Returns how many documents were updated.
     """
-    updated = 0
+    from bson import ObjectId
+
+    slugs = _slug_lookup(db, collection)
+    totals = {}
     page = 1
     while page <= max_pages:
         url = f"{METRICS_API_URL}/{endpoint}/data/?visit__greater=0&page_size=50&page={page}"
@@ -558,18 +685,23 @@ def _update_views_from_totals(db, collection, endpoint, id_field, max_pages=1000
 
         for row in data["data"]:
             object_id = row.get(id_field)
-            visit = row.get("visit") or 0
             if not object_id:
                 continue
-            db[collection].update_one(
-                _id_or_slug_query(object_id),
-                {"$set": {"metrics.views": visit}},
-            )
-            updated += 1
+            if not ObjectId.is_valid(object_id):
+                object_id = slugs.get(object_id, object_id)
+            totals[object_id] = totals.get(object_id, 0) + (row.get("visit") or 0)
 
         if not data["links"].get("next"):
             break
         page += 1
+
+    updated = 0
+    for object_id, visit in totals.items():
+        db[collection].update_one(
+            _id_or_slug_query(object_id),
+            {"$set": {"metrics.views": visit}},
+        )
+        updated += 1
 
     logger.info("Updated metrics.views for %d %s(s) from %s", updated, collection, endpoint)
     return updated
@@ -598,10 +730,7 @@ def update_udata_metrics(ti):
     # uma parte. Por isso junta-se tudo por dataset primeiro e soma-se.
     from bson import ObjectId
 
-    slug_to_oid = {
-        doc["slug"]: str(doc["_id"])
-        for doc in db["dataset"].find({"slug": {"$exists": True}}, {"slug": 1})
-    }
+    slug_to_oid = _slug_lookup(db, "dataset")
     totals = {}
     while page <= max_pages:
         url = f"{METRICS_API_URL}/datasets_total/data/?visit__greater=0&page_size=50&page={page}"
@@ -738,11 +867,11 @@ def update_udata_metrics(ti):
         db, "reuse", "reuses_total", "reuse_id", max_pages
     )
 
-    for ds_id, views in extracted.get("dataservice_views", {}).items():
-        db["dataservice"].update_one(
-            _id_or_slug_query(ds_id),
-            {"$set": {"metrics.views": views}},
-        )
+    # Antes vinha do metric_event (dataservice_views), que só guarda 90 dias:
+    # o udata mostrava as visitas dos últimos 90 dias, não o total.
+    _update_views_from_totals(
+        db, "dataservice", "dataservices_total", "dataservice_id", max_pages
+    )
 
     # 5. Update site-level metrics
     site_counts = extracted["site_counts"]
