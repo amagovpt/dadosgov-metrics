@@ -123,7 +123,11 @@ def extract_tracking_events():
             resource_dataset_lookup[str(res["_id"])] = str(doc["_id"])
 
     # Daily views per dataset (for PostgreSQL metric.visits_datasets)
-    dataset_views_daily = []
+    # O udata regista a visita umas vezes com o ObjectId e outras com o slug do
+    # mesmo dataset; depois de resolver o slug, as duas partes têm de ser
+    # SOMADAS. Antes cada uma ia como linha separada e o upsert ficava só com
+    # uma delas: em 2026-08-14 perderam-se assim ~10% das visitas do dia.
+    daily_views = {}
     for doc in db["metric_event"].aggregate(
         [
             {
@@ -152,14 +156,17 @@ def extract_tracking_events():
         dataset_id = resolve_dataset_id(doc["_id"]["object_id"])
         if not dataset_id:
             continue
-        dataset_views_daily.append(
-            {
-                "dataset_id": dataset_id,
-                "date_metric": doc["_id"]["date"],
-                "nb_visit": doc["total"],
-                "organization_id": org_lookup.get(dataset_id),
-            }
-        )
+        key = (dataset_id, doc["_id"]["date"])
+        daily_views[key] = daily_views.get(key, 0) + doc["total"]
+    dataset_views_daily = [
+        {
+            "dataset_id": dataset_id,
+            "date_metric": date_metric,
+            "nb_visit": total,
+            "organization_id": org_lookup.get(dataset_id),
+        }
+        for (dataset_id, date_metric), total in daily_views.items()
+    ]
 
     # Daily downloads per resource (for PostgreSQL metric.visits_resources)
     resource_downloads_daily = []
@@ -339,9 +346,9 @@ def _upsert_daily(cursor, table, key, extra_cols, rows):
 
     Mesma semantica do antigo ON CONFLICT (<key>, date_metric) linha a linha:
     nb_visit e substituido e as extra_cols so sao substituidas se vierem
-    preenchidas. Se o lote trouxer a mesma chave varias vezes (slug e ObjectId
-    do mesmo dataset), fica o nb_visit da ultima e, por coluna, o ultimo valor
-    nao nulo. Devolve o numero de linhas recebidas.
+    preenchidas. Se o lote trouxer a mesma chave varias vezes (nao devia: o
+    extract ja agrega por chave), fica o nb_visit da ultima e, por coluna, o
+    ultimo valor nao nulo. Devolve o numero de linhas recebidas.
     """
     from psycopg2.extras import execute_values
 
@@ -585,30 +592,48 @@ def update_udata_metrics(ti):
     max_pages = 10000
 
     # 1. Update views + downloads from PostgreSQL (datasets_total)
+    # O datasets_total tem linhas antigas com o slug como dataset_id (slugs
+    # que entretanto mudaram, histórico Matomo) ao lado da linha do ObjectId.
+    # Escritas uma a uma, a segunda apagava a primeira e o udata ficava só com
+    # uma parte. Por isso junta-se tudo por dataset primeiro e soma-se.
+    from bson import ObjectId
+
+    slug_to_oid = {
+        doc["slug"]: str(doc["_id"])
+        for doc in db["dataset"].find({"slug": {"$exists": True}}, {"slug": 1})
+    }
+    totals = {}
     while page <= max_pages:
         url = f"{METRICS_API_URL}/datasets_total/data/?visit__greater=0&page_size=50&page={page}"
         data = _get_with_retry(url)
 
         for row in data["data"]:
             dataset_id = row.get("dataset_id")
-            visit = row.get("visit") or 0
-            download_resource = row.get("download_resource") or 0
             if not dataset_id:
                 continue
-            db["dataset"].update_one(
-                _id_or_slug_query(dataset_id),
-                {
-                    "$set": {
-                        "metrics.views": visit,
-                        "metrics.resources_downloads": download_resource,
-                    }
-                },
+            if not ObjectId.is_valid(dataset_id):
+                dataset_id = slug_to_oid.get(dataset_id, dataset_id)
+            visit, download = totals.get(dataset_id, (0, 0))
+            totals[dataset_id] = (
+                visit + (row.get("visit") or 0),
+                download + (row.get("download_resource") or 0),
             )
-            updated += 1
 
         if not data["links"].get("next"):
             break
         page += 1
+
+    for dataset_id, (visit, download_resource) in totals.items():
+        db["dataset"].update_one(
+            _id_or_slug_query(dataset_id),
+            {
+                "$set": {
+                    "metrics.views": visit,
+                    "metrics.resources_downloads": download_resource,
+                }
+            },
+        )
+        updated += 1
 
     # 2. Update per-resource download counts (resource.metrics.views)
     resource_downloads = extracted.get("resource_downloads", {})
