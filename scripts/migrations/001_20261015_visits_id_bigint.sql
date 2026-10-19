@@ -13,8 +13,13 @@
 --
 -- As materialized views leem __id (metrics_datasets, resources, resources_total)
 -- e impedem o ALTER COLUMN TYPE, por isso sao largadas aqui e recriadas pelo
--- create_tables.sql. Correr os dois numa so transacao, para quem le (metrics-api)
--- nunca ver as views em falta:
+-- create_tables.sql. Aplicar com o scripts/apply_schema.py, que corre os dois numa
+-- so transacao (quem le, a metrics-api, nunca ve as views em falta) e regista a
+-- migracao em metric.schema_migrations:
+--
+--   docker exec <container-airflow> python3 /opt/airflow/scripts/apply_schema.py
+--
+-- Sem o script, o equivalente manual e:
 --
 --   psql -v ON_ERROR_STOP=1 -1 -f scripts/migrations/001_20261015_visits_id_bigint.sql \
 --                              -f scripts/create_tables.sql
