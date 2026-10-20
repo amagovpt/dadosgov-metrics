@@ -266,32 +266,16 @@ def step_show_variables():
 def step_create_tables(repo_dir, container):
     banner("4. Criacao das tabelas no Hydra CSV (PostgreSQL porta 5434)")
 
-    sql_script = os.path.join(repo_dir, "scripts", "create_tables.sql")
-    if not os.path.isfile(sql_script):
-        print(f"  ERRO: Script nao encontrado em {sql_script}")
-        return
+    step("Aplicando create_tables.sql + migracoes via Airflow (hydra_postgres_csv)...")
 
-    step("Executando create_tables.sql via Airflow (hydra_postgres_csv)...")
-
-    # Copy SQL script into the Airflow container
-    run(f"docker cp {sql_script} {container}:/tmp/create_tables.sql")
-
-    # Execute via Python inside the container using the Airflow connection
-    # This avoids needing psql on the host and uses the correct connection
-    r = docker_exec(
-        container,
-        'python3 -c "'
-        "from airflow.providers.postgres.hooks.postgres import PostgresHook; "
-        "hook = PostgresHook(postgres_conn_id='hydra_postgres_csv'); "
-        "conn = hook.get_conn(); cur = conn.cursor(); "
-        "cur.execute(open('/tmp/create_tables.sql').read()); "
-        "conn.commit(); cur.close(); conn.close(); "
-        "print('Tabelas e views criadas com sucesso')"
-        '"',
-    )
+    # Corre dentro do container (scripts/ esta montado em /opt/airflow/scripts
+    # pelo docker-compose), com a connection do Airflow: nao precisa de psql no
+    # host. Ver scripts/apply_schema.py.
+    r = docker_exec(container, "python3 /opt/airflow/scripts/apply_schema.py")
     if r.returncode == 0:
-        print(f"  {r.stdout.strip()}")
+        print(r.stdout.rstrip())
     else:
+        print(r.stdout.rstrip())
         print(f"  ERRO: {r.stderr.strip()}")
 
 
