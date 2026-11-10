@@ -490,6 +490,18 @@ def _upsert_daily(cursor, table, key, extra_cols, rows):
     return len(rows)
 
 
+def _relation_exists(cursor, name):
+    """True se a tabela/view `name` (ex.: 'metric.visits_datastories') existe."""
+    cursor.execute("SELECT to_regclass(%s) IS NOT NULL", (name,))
+    return cursor.fetchone()[0]
+
+
+_SCHEMA_HINT = (
+    "corre scripts/apply_schema.py e recarrega o PostgREST "
+    "(NOTIFY pgrst, 'reload schema'); até lá as datastories não contam"
+)
+
+
 def send_to_metrics_db(ti):
     """Write daily views/downloads to PostgreSQL metric schema (base tables)."""
     from airflow.providers.postgres.hooks.postgres import PostgresHook
@@ -515,12 +527,14 @@ def send_to_metrics_db(ti):
         ON metric.visits_resources (resource_id, date_metric)
         """
     )
+    has_datastories = _relation_exists(cursor, "metric.visits_datastories")
+    if not has_datastories:
+        logger.warning("metric.visits_datastories não existe: %s", _SCHEMA_HINT)
     for table, key in [
         ("visits_organizations", "organization_id"),
         ("visits_reuses", "reuse_id"),
         ("visits_dataservices", "dataservice_id"),
-        ("visits_datastories", "datastory_id"),
-    ]:
+    ] + ([("visits_datastories", "datastory_id")] if has_datastories else []):
         cursor.execute(
             f"CREATE UNIQUE INDEX IF NOT EXISTS {table}_upsert_idx "
             f"ON metric.{table} ({key}, date_metric)"
@@ -598,16 +612,18 @@ def send_to_metrics_db(ti):
             for r in extracted.get("dataservice_views_daily", [])
         ],
     )
-    datastories_inserted = _upsert_daily(
-        cursor,
-        table="metric.visits_datastories",
-        key="datastory_id",
-        extra_cols=[],
-        rows=[
-            (r["date_metric"], r["datastory_id"], r["nb_visit"])
-            for r in extracted.get("datastory_views_daily", [])
-        ],
-    )
+    datastories_inserted = 0
+    if has_datastories:
+        datastories_inserted = _upsert_daily(
+            cursor,
+            table="metric.visits_datastories",
+            key="datastory_id",
+            extra_cols=[],
+            rows=[
+                (r["date_metric"], r["datastory_id"], r["nb_visit"])
+                for r in extracted.get("datastory_views_daily", [])
+            ],
+        )
 
     conn.commit()
     cursor.close()
@@ -662,8 +678,14 @@ def refresh_materialized_views():
         "metric.site",
     ]
 
+
+    optional_views = {"metric.datastories", "metric.datastories_total"}
+
     refreshed = 0
     for view in views:
+        if view in optional_views and not _relation_exists(cursor, view):
+            logger.warning("%s não existe, não refrescada: %s", view, _SCHEMA_HINT)
+            continue
         cursor.execute(f"REFRESH MATERIALIZED VIEW {view}")
         refreshed += 1
         logger.info("Refreshed %s", view)
@@ -740,17 +762,29 @@ def _update_views_from_totals(db, collection, endpoint, id_field, max_pages=1000
 def _update_datastory_views(db, max_pages=10000):
     """Write metrics.views of each datastory from datastories_total.
 
-    Não serve o _update_views_from_totals: as datastories são conteúdo do
-    Squidex e o udata não tem documento delas para atualizar por ObjectId ou
-    slug, só a coleção datastory_metrics, um documento por slug. Por isso aqui
-    é upsert: a primeira visita de uma datastory cria o documento. O índice
-    único em slug (migração do udata) impede que fique em duplicado.
+    _update_views_from_totals_ doesn't work: Datastories are content in
+    Squidex, and udata doesn't have documents for them to update by ObjectId or
+    slug—only the datastory_metrics collection, with one document per slug. That's why we
+    use upsert here: the first visit to a Datastory creates the document. The
+    unique index on the slug (from the udata migration) prevents duplicates.
+
+    If the metrics-api returns an error (datastories_total does not yet exist, or
+    PostgREST has not yet reloaded the schema and does not recognize it), it notifies the user and returns
+    what has already been written, rather than causing the entire update_udata_metrics operation to fail.
+    Connection failures continue to be logged, as with the other endpoints.
+
     """
+    import requests
+
     updated = 0
     page = 1
     while page <= max_pages:
         url = f"{METRICS_API_URL}/datastories_total/data/?visit__greater=0&page_size=50&page={page}"
-        data = _get_with_retry(url)
+        try:
+            data = _get_with_retry(url)
+        except requests.exceptions.HTTPError as exc:
+            logger.warning("datastories_total is unavailable (%s): %s", exc, _SCHEMA_HINT)
+            return updated
 
         for row in data["data"]:
             slug = row.get("datastory_id")
