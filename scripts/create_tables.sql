@@ -88,6 +88,16 @@ CREATE TABLE IF NOT EXISTS metric.visits_resources
     nb_visit_static INTEGER DEFAULT 0,
     nb_visit_api_permalink INTEGER DEFAULT 0
 );
+-- Datastories sao conteudo do Squidex: o udata so regista a visita e o id e o
+-- slug. Nasce sem as colunas nb_visit_* das outras, que vinham do Matomo (que
+-- nunca mediu datastories), e ja com __id bigint (ver migracao 001).
+CREATE TABLE IF NOT EXISTS metric.visits_datastories
+(
+    __id BIGSERIAL PRIMARY KEY,
+    date_metric DATE,
+    datastory_id CHARACTER VARYING,
+    nb_visit INTEGER DEFAULT 0
+);
 
 -- Matomo tables
 CREATE TABLE IF NOT EXISTS metric.matomo_datasets
@@ -132,12 +142,14 @@ CREATE TABLE IF NOT EXISTS metric.matomo_dataservices
 -- views antigas ate ao commit. Os indices delas sao recriados no fim do ficheiro.
 --
 -- Ordem inversa a da criacao, para nao ser preciso CASCADE: quem depende cai primeiro.
+DROP MATERIALIZED VIEW IF EXISTS metric.datastories_total;
 DROP MATERIALIZED VIEW IF EXISTS metric.dataservices_total;
 DROP MATERIALIZED VIEW IF EXISTS metric.resources_total;
 DROP MATERIALIZED VIEW IF EXISTS metric.organizations_total;
 DROP MATERIALIZED VIEW IF EXISTS metric.reuses_total;
 DROP MATERIALIZED VIEW IF EXISTS metric.datasets_total;
 DROP MATERIALIZED VIEW IF EXISTS metric.site;
+DROP MATERIALIZED VIEW IF EXISTS metric.datastories;
 DROP MATERIALIZED VIEW IF EXISTS metric.dataservices;
 DROP MATERIALIZED VIEW IF EXISTS metric.resources;
 DROP MATERIALIZED VIEW IF EXISTS metric.organizations;
@@ -292,6 +304,16 @@ CREATE MATERIALIZED VIEW metric.dataservices AS
     GROUP BY metric_month, dataservice_id
 ;
 
+CREATE MATERIALIZED VIEW metric.datastories AS
+    SELECT
+        MIN(__id) as __id,
+        datastory_id,
+        to_char(date_trunc('month', date_metric) , 'YYYY-mm') AS metric_month,
+        sum(nb_visit) as monthly_visit
+    FROM metric.visits_datastories
+    GROUP BY metric_month, datastory_id
+;
+
 -- Global site table
 CREATE MATERIALIZED VIEW metric.site AS
     SELECT __id,
@@ -372,6 +394,15 @@ CREATE MATERIALIZED VIEW metric.dataservices_total AS
     GROUP BY dataservice_id
 ;
 
+CREATE MATERIALIZED VIEW metric.datastories_total AS
+    SELECT
+        MIN(__id) AS __id,
+        datastory_id,
+        SUM(nb_visit) AS visit
+    FROM metric.visits_datastories
+    GROUP BY datastory_id
+;
+
 -- Index on visits table
 CREATE INDEX IF NOT EXISTS visits_datasets_dataset_id ON metric.visits_datasets USING btree (dataset_id);
 CREATE INDEX IF NOT EXISTS visits_datasets_date_metric ON metric.visits_datasets USING btree (date_metric);
@@ -392,6 +423,9 @@ CREATE INDEX IF NOT EXISTS visits_dataservices_dataservice_id ON metric.visits_d
 CREATE INDEX IF NOT EXISTS visits_dataservices_organization_id ON metric.visits_dataservices USING btree (organization_id);
 CREATE INDEX IF NOT EXISTS visits_dataservices_date_metric ON metric.visits_dataservices USING btree (date_metric);
 
+CREATE UNIQUE INDEX IF NOT EXISTS visits_datastories_upsert_idx ON metric.visits_datastories (datastory_id, date_metric);
+CREATE INDEX IF NOT EXISTS visits_datastories_date_metric ON metric.visits_datastories USING btree (date_metric);
+
 -- Index on monthly aggregated tables
 CREATE INDEX IF NOT EXISTS datasets_dataset_id ON metric.datasets USING btree (dataset_id);
 CREATE INDEX IF NOT EXISTS datasets_metric_month ON metric.datasets USING btree (metric_month);
@@ -409,9 +443,13 @@ CREATE INDEX IF NOT EXISTS resources_metric_month ON metric.resources USING btre
 CREATE INDEX IF NOT EXISTS dataservices_dataservice_id ON metric.dataservices USING btree (dataservice_id);
 CREATE INDEX IF NOT EXISTS dataservices_metric_month ON metric.dataservices USING btree (metric_month);
 
+CREATE INDEX IF NOT EXISTS datastories_datastory_id ON metric.datastories USING btree (datastory_id);
+CREATE INDEX IF NOT EXISTS datastories_metric_month ON metric.datastories USING btree (metric_month);
+
 -- Index on total tables
 CREATE INDEX IF NOT EXISTS datasets_total_dataset_id ON metric.datasets_total USING btree (dataset_id);
 CREATE INDEX IF NOT EXISTS organizations_total_organization_id ON metric.organizations_total USING btree (organization_id);
 CREATE INDEX IF NOT EXISTS reuses_total_reuse_id ON metric.reuses_total USING btree (reuse_id);
 CREATE INDEX IF NOT EXISTS resources_total_resource_id ON metric.resources_total USING btree (resource_id);
 CREATE INDEX IF NOT EXISTS dataservices_total_dataservice_id ON metric.dataservices_total USING btree (dataservice_id);
+CREATE INDEX IF NOT EXISTS datastories_total_datastory_id ON metric.datastories_total USING btree (datastory_id);

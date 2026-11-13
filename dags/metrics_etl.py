@@ -15,7 +15,8 @@ except Exception:
     METRICS_API_URL = "http://host.docker.internal:8006/api"
 
 # Janela, em dias, das agregações DIÁRIAS (as que alimentam
-# metric.visits_datasets, _resources, _organizations, _reuses e _dataservices).
+# metric.visits_datasets, _resources, _organizations, _reuses, _dataservices e
+# _datastories).
 # Só essas: os totais
 # cumulativos mais abaixo têm de continuar a varrer o histórico completo, senão
 # passavam a ser "totais dos últimos N dias" e o MongoDB/udata recebia valores
@@ -234,6 +235,17 @@ def extract_tracking_events():
         ).items()
     ]
 
+    # Daily views per datastory (for PostgreSQL metric.visits_datastories). As
+    # datastories são conteúdo do Squidex: o udata só regista a visita
+    # (POST /api/1/datastories/<slug>/views/), não tem documento nem ObjectId
+    # delas. O slug é o próprio id, por isso não há nada a resolver.
+    datastory_views_daily = [
+        {"datastory_id": slug, "date_metric": day, "nb_visit": total}
+        for (slug, day), total in _daily_views(
+            db, "datastory", lambda i: i or None
+        ).items()
+    ]
+
     # Daily downloads per resource (for PostgreSQL metric.visits_resources)
     resource_downloads_daily = []
     for doc in db["metric_event"].aggregate(
@@ -382,7 +394,8 @@ def extract_tracking_events():
     logger.info(
         "Aggregated %d events (janela das diarias: %s): %d dataset views, %d downloads, "
         "%d resource downloads, %d org views, %d reuse views, %d daily dataset rows, "
-        "%d daily resource rows, %d/%d/%d daily organization/reuse/dataservice rows",
+        "%d daily resource rows, %d/%d/%d/%d daily "
+        "organization/reuse/dataservice/datastory rows",
         total_events,
         ("%d dias" % DAILY_WINDOW_DAYS) if DAILY_WINDOW_DAYS > 0 else "desligada (historico completo)",
         len(view_counts),
@@ -395,6 +408,7 @@ def extract_tracking_events():
         len(organization_views_daily),
         len(reuse_views_daily),
         len(dataservice_views_daily),
+        len(datastory_views_daily),
     )
     return {
         "dataset_views": view_counts,
@@ -410,6 +424,7 @@ def extract_tracking_events():
         "organization_views_daily": organization_views_daily,
         "reuse_views_daily": reuse_views_daily,
         "dataservice_views_daily": dataservice_views_daily,
+        "datastory_views_daily": datastory_views_daily,
     }
 
 
@@ -475,6 +490,18 @@ def _upsert_daily(cursor, table, key, extra_cols, rows):
     return len(rows)
 
 
+def _relation_exists(cursor, name):
+    """True se a tabela/view `name` (ex.: 'metric.visits_datastories') existe."""
+    cursor.execute("SELECT to_regclass(%s) IS NOT NULL", (name,))
+    return cursor.fetchone()[0]
+
+
+_SCHEMA_HINT = (
+    "corre scripts/apply_schema.py e recarrega o PostgREST "
+    "(NOTIFY pgrst, 'reload schema'); até lá as datastories não contam"
+)
+
+
 def send_to_metrics_db(ti):
     """Write daily views/downloads to PostgreSQL metric schema (base tables)."""
     from airflow.providers.postgres.hooks.postgres import PostgresHook
@@ -500,11 +527,14 @@ def send_to_metrics_db(ti):
         ON metric.visits_resources (resource_id, date_metric)
         """
     )
+    has_datastories = _relation_exists(cursor, "metric.visits_datastories")
+    if not has_datastories:
+        logger.warning("metric.visits_datastories não existe: %s", _SCHEMA_HINT)
     for table, key in [
         ("visits_organizations", "organization_id"),
         ("visits_reuses", "reuse_id"),
         ("visits_dataservices", "dataservice_id"),
-    ]:
+    ] + ([("visits_datastories", "datastory_id")] if has_datastories else []):
         cursor.execute(
             f"CREATE UNIQUE INDEX IF NOT EXISTS {table}_upsert_idx "
             f"ON metric.{table} ({key}, date_metric)"
@@ -582,19 +612,32 @@ def send_to_metrics_db(ti):
             for r in extracted.get("dataservice_views_daily", [])
         ],
     )
+    datastories_inserted = 0
+    if has_datastories:
+        datastories_inserted = _upsert_daily(
+            cursor,
+            table="metric.visits_datastories",
+            key="datastory_id",
+            extra_cols=[],
+            rows=[
+                (r["date_metric"], r["datastory_id"], r["nb_visit"])
+                for r in extracted.get("datastory_views_daily", [])
+            ],
+        )
 
     conn.commit()
     cursor.close()
     conn.close()
 
     logger.info(
-        "Wrote %d dataset visit rows + %d resource download rows + %d/%d/%d "
-        "organization/reuse/dataservice visit rows to PostgreSQL metric schema",
+        "Wrote %d dataset visit rows + %d resource download rows + %d/%d/%d/%d "
+        "organization/reuse/dataservice/datastory visit rows to PostgreSQL metric schema",
         datasets_inserted,
         resources_inserted,
         organizations_inserted,
         reuses_inserted,
         dataservices_inserted,
+        datastories_inserted,
     )
     return {
         "datasets_inserted": datasets_inserted,
@@ -602,6 +645,7 @@ def send_to_metrics_db(ti):
         "organizations_inserted": organizations_inserted,
         "reuses_inserted": reuses_inserted,
         "dataservices_inserted": dataservices_inserted,
+        "datastories_inserted": datastories_inserted,
     }
 
 
@@ -629,11 +673,19 @@ def refresh_materialized_views():
         "metric.reuses_total",
         "metric.dataservices",
         "metric.dataservices_total",
+        "metric.datastories",
+        "metric.datastories_total",
         "metric.site",
     ]
 
+
+    optional_views = {"metric.datastories", "metric.datastories_total"}
+
     refreshed = 0
     for view in views:
+        if view in optional_views and not _relation_exists(cursor, view):
+            logger.warning("%s não existe, não refrescada: %s", view, _SCHEMA_HINT)
+            continue
         cursor.execute(f"REFRESH MATERIALIZED VIEW {view}")
         refreshed += 1
         logger.info("Refreshed %s", view)
@@ -704,6 +756,52 @@ def _update_views_from_totals(db, collection, endpoint, id_field, max_pages=1000
         updated += 1
 
     logger.info("Updated metrics.views for %d %s(s) from %s", updated, collection, endpoint)
+    return updated
+
+
+def _update_datastory_views(db, max_pages=10000):
+    """Write metrics.views of each datastory from datastories_total.
+
+    _update_views_from_totals_ doesn't work: Datastories are content in
+    Squidex, and udata doesn't have documents for them to update by ObjectId or
+    slug—only the datastory_metrics collection, with one document per slug. That's why we
+    use upsert here: the first visit to a Datastory creates the document. The
+    unique index on the slug (from the udata migration) prevents duplicates.
+
+    If the metrics-api returns an error (datastories_total does not yet exist, or
+    PostgREST has not yet reloaded the schema and does not recognize it), it notifies the user and returns
+    what has already been written, rather than causing the entire update_udata_metrics operation to fail.
+    Connection failures continue to be logged, as with the other endpoints.
+
+    """
+    import requests
+
+    updated = 0
+    page = 1
+    while page <= max_pages:
+        url = f"{METRICS_API_URL}/datastories_total/data/?visit__greater=0&page_size=50&page={page}"
+        try:
+            data = _get_with_retry(url)
+        except requests.exceptions.HTTPError as exc:
+            logger.warning("datastories_total is unavailable (%s): %s", exc, _SCHEMA_HINT)
+            return updated
+
+        for row in data["data"]:
+            slug = row.get("datastory_id")
+            if not slug:
+                continue
+            db["datastory_metrics"].update_one(
+                {"slug": slug},
+                {"$set": {"metrics.views": row.get("visit") or 0}},
+                upsert=True,
+            )
+            updated += 1
+
+        if not data["links"].get("next"):
+            break
+        page += 1
+
+    logger.info("Updated metrics.views for %d datastory(ies) from datastories_total", updated)
     return updated
 
 
@@ -873,6 +971,8 @@ def update_udata_metrics(ti):
         db, "dataservice", "dataservices_total", "dataservice_id", max_pages
     )
 
+    datastory_updated = _update_datastory_views(db, max_pages)
+
     # 5. Update site-level metrics
     site_counts = extracted["site_counts"]
     today = datetime.utcnow().strftime("%Y-%m-%d")
@@ -891,11 +991,12 @@ def update_udata_metrics(ti):
     client.close()
     logger.info(
         "Updated %d datasets + %d resources + %d organizations + %d reuses "
-        "+ site stats in MongoDB for %s",
+        "+ %d datastories + site stats in MongoDB for %s",
         updated,
         resource_updated,
         org_updated,
         reuse_updated,
+        datastory_updated,
         today,
     )
     return {
@@ -903,6 +1004,7 @@ def update_udata_metrics(ti):
         "resources_updated": resource_updated,
         "organizations_updated": org_updated,
         "reuses_updated": reuse_updated,
+        "datastories_updated": datastory_updated,
         "site_metrics_date": today,
     }
 
