@@ -21,6 +21,13 @@ Tudo numa unica transaccao, por esta ordem:
 Se algo falhar, ROLLBACK e a base de dados fica exatamente como estava. Quem le
 (metrics-api) continua a ver as views antigas ate ao commit.
 
+No fim, na mesma transaccao, NOTIFY pgrst 'reload schema': o PostgREST nao ve
+DDL sozinho e, sem isto, responde 404 (PGRST205) a uma tabela/view nova ate ser
+reiniciado. Foi assim que as datastories ficaram sem contagem: o schema
+estava aplicado, mas a metrics-api nao conhecia o datastories_total e o DAG so
+deixava um WARNING. O NOTIFY so e entregue no commit, por isso o --dry-run
+(ROLLBACK) nao notifica nada.
+
 Uma migracao aplicada a mao (psql) antes deste script existir nao esta
 registada e volta a correr uma vez: por isso as migracoes devem ser
 idempotentes (a 001 e).
@@ -83,6 +90,8 @@ def main():
             cursor.execute(create_tables)
         else:
             print("  sem migracoes pendentes")
+        # Entregue so no commit; ver o docstring.
+        cursor.execute("NOTIFY pgrst, 'reload schema'")
     except Exception as exc:
         conn.rollback()
         print(f"  ERRO (rollback, nada foi alterado): {exc}", file=sys.stderr)
@@ -93,7 +102,7 @@ def main():
         print("  --dry-run: ROLLBACK, nada foi alterado")
     else:
         conn.commit()
-        print("  Schema aplicado com sucesso")
+        print("  Schema aplicado com sucesso (PostgREST notificado: reload schema)")
     cursor.close()
     conn.close()
 
