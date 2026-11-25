@@ -272,11 +272,15 @@ def step_create_tables(repo_dir, container):
     # pelo docker-compose), com a connection do Airflow: nao precisa de psql no
     # host. Ver scripts/apply_schema.py.
     r = docker_exec(container, "python3 /opt/airflow/scripts/apply_schema.py")
-    if r.returncode == 0:
-        print(r.stdout.rstrip())
-    else:
-        print(r.stdout.rstrip())
+    print(r.stdout.rstrip())
+    if r.returncode != 0:
+        # Parar aqui: o apply_schema fez ROLLBACK, por isso nao ha schema novo.
+        # Seguir ate "Setup concluido!" escondia a falha, e o metrics_etl corria
+        # a verde a saltar o que faltava (ex.: as datastories so com um WARNING).
         print(f"  ERRO: {r.stderr.strip()}")
+        print("  Schema NAO aplicado. Corrija o erro e volte a correr:")
+        print(f"    docker exec {container} python3 /opt/airflow/scripts/apply_schema.py")
+        sys.exit(1)
 
 
 def wait_for_dag(container, dag_id, timeout=300):
